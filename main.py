@@ -491,6 +491,76 @@ def run_eod() -> None:
     logger.info(f"EOD: day P&L ${acct.get('day_pnl',0):+,.0f}  week ${_brain.get_weekly_pnl():+,.0f}")
 
 
+def run_weekly_summary() -> None:
+    """Friday 4:15 PM ET — full week recap sent to Telegram."""
+    logger.info("=== Weekly summary ===")
+    state     = _brain.load()
+    trades    = state.get("trades", [])
+    daily_pnl = state.get("daily_pnl", {})
+
+    # This week Mon–Fri
+    from datetime import date, timedelta
+    today  = date.today()
+    monday = today - timedelta(days=today.weekday())
+    week_dates = [(monday + timedelta(days=d)).isoformat() for d in range(5)]
+
+    week_trades = [t for t in trades if t.get("date", "") >= monday.isoformat()]
+    week_pnl    = sum(daily_pnl.get(d, 0) for d in week_dates)
+    acct        = get_account()
+    equity      = acct.get("equity", 100_000)
+
+    wins     = [t for t in week_trades if t.get("result") == "WIN"]
+    losses   = [t for t in week_trades if t.get("result") == "LOSS"]
+    scratches = [t for t in week_trades if t.get("result") == "SCRATCH"]
+    win_rate = len(wins) / len(week_trades) * 100 if week_trades else 0
+
+    # Best and worst trade
+    best  = max(week_trades, key=lambda t: t.get("pnl", 0), default=None)
+    worst = min(week_trades, key=lambda t: t.get("pnl", 0), default=None)
+
+    # Daily breakdown
+    day_lines = []
+    for d in week_dates:
+        dp = daily_pnl.get(d, None)
+        if dp is not None:
+            emoji = "✅" if dp >= 0 else "❌"
+            day_lines.append(f"  {emoji} {d}  ${dp:+,.0f}")
+
+    regime = state.get("last_regime", "UNKNOWN")
+    w_mult = _brain.get_weekly_size_mult()
+
+    lines = [
+        "📊 <b>WEEKLY SUMMARY</b>",
+        f"Week of {monday.strftime('%b %d')} – {today.strftime('%b %d, %Y')}",
+        "",
+        f"💰 Week P&L  : <b>${week_pnl:+,.0f}</b>",
+        f"   Equity    : ${equity:,.0f}",
+        f"   Return    : {week_pnl/100_000*100:+.2f}%",
+        "",
+        f"📈 Trades    : {len(week_trades)}  |  W:{len(wins)} L:{len(losses)} S:{len(scratches)}",
+        f"   Win Rate  : {win_rate:.1f}%",
+    ]
+
+    if best:
+        lines.append(f"   Best      : {best['ticker']} {best['direction']} +${best['pnl']:,.0f}")
+    if worst:
+        lines.append(f"   Worst     : {worst['ticker']} {worst['direction']} ${worst['pnl']:,.0f}")
+
+    if day_lines:
+        lines += ["", "📅 Daily P&L:"] + day_lines
+
+    lines += [
+        "",
+        f"🧠 Regime    : {regime}  |  Next week size: {w_mult:.2f}x",
+        f"   {_brain.summary().splitlines()[1].strip()}",
+        "",
+        "Have a great weekend! 🎉",
+    ]
+
+    send_alert("\n".join(lines))
+    logger.info(f"Weekly summary sent: {len(week_trades)} trades, P&L ${week_pnl:+,.0f}")
+
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -538,6 +608,10 @@ def main() -> None:
     # EOD
     sched.add_job(run_eod, "cron", day_of_week="mon-fri",
                   hour=MARKET_CLOSE_HOUR, minute=5, id="eod")
+
+    # Weekly summary — Friday 4:15 PM ET
+    sched.add_job(run_weekly_summary, "cron", day_of_week="fri",
+                  hour=MARKET_CLOSE_HOUR, minute=15, id="weekly")
 
     logger.info(
         "Bot v3 ready:\n"
