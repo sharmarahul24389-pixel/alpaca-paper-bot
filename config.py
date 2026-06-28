@@ -35,11 +35,9 @@ SEC_8K_FILTER_ENABLED     = os.getenv("SEC_8K_FILTER_ENABLED", "true").lower() =
 # Earnings block: skip ORB/Quant within N days of earnings
 EARNINGS_BLOCK_DAYS   = int(os.getenv("EARNINGS_BLOCK_DAYS", "3"))
 
-# ── Twilio WhatsApp ────────────────────────────────────────────────────────────
-TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_WHATSAPP_FROM = os.getenv("TWILIO_WHATSAPP_FROM")
-WHATSAPP_TO          = os.getenv("WHATSAPP_TO")
+# ── Telegram ───────────────────────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Scanner ────────────────────────────────────────────────────────────────────
 TOP_MOVERS_COUNT    = 15
