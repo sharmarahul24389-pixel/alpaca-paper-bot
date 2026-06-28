@@ -35,6 +35,9 @@ SEC_8K_FILTER_ENABLED     = os.getenv("SEC_8K_FILTER_ENABLED", "true").lower() =
 # Earnings block: skip ORB/Quant within N days of earnings
 EARNINGS_BLOCK_DAYS   = int(os.getenv("EARNINGS_BLOCK_DAYS", "3"))
 
+# Correlation filter: max trades per sector per day (0 = unlimited)
+MAX_SECTOR_SIGNALS    = int(os.getenv("MAX_SECTOR_SIGNALS", "2"))
+
 # ── Telegram ───────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")

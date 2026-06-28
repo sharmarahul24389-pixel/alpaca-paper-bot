@@ -29,7 +29,7 @@ from config import (
     AUTO_MAX_SIGNALS, FILL_CHECK_INTERVAL,
     DAILY_PROFIT_TARGET, GRADE_A_ONLY_LABEL, AUTO_MAX_DAILY_LOSS,
     TIME_STOP_MINUTES, TREND_FILTER_ENABLED, CATALYST_HARD_SKIP_SCORE,
-    CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS,
+    CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS, MAX_SECTOR_SIGNALS,
 )
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
@@ -54,6 +54,7 @@ import brain as _brain
 from catalyst import (
     check_trend_alignment, get_catalyst_score,
     get_trump_catalyst, get_congress_buys,
+    STOCK_TO_SECTOR,
 )
 
 logging.basicConfig(
@@ -64,12 +65,13 @@ logger = logging.getLogger(__name__)
 _ET = pytz.timezone(TIMEZONE)
 
 # ── Daily state ───────────────────────────────────────────────────────────────
-_signals_today:    list[dict] = []
-_tickers_signaled: set[str]   = set()
-_signaled_date:    str        = ""
-_momentum_longs:   list[str]  = []
-_momentum_shorts:  list[str]  = []
-_momentum_rank_date: str      = ""
+_signals_today:    list[dict]  = []
+_tickers_signaled: set[str]    = set()
+_sector_counts:    dict[str,int] = {}   # correlation filter: trades per sector today
+_signaled_date:    str         = ""
+_momentum_longs:   list[str]   = []
+_momentum_shorts:  list[str]   = []
+_momentum_rank_date: str       = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -84,11 +86,12 @@ def is_market_open() -> bool:
 
 
 def _reset_daily_state() -> None:
-    global _signals_today, _tickers_signaled, _signaled_date
+    global _signals_today, _tickers_signaled, _sector_counts, _signaled_date
     today = datetime.now(_ET).strftime("%Y-%m-%d")
     if today != _signaled_date:
         _signals_today    = []
         _tickers_signaled = set()
+        _sector_counts    = {}
         _signaled_date    = today
         reset_daily_pnl()
 
@@ -183,6 +186,13 @@ def _execute_signal(
     if _already_signaled(ticker, direction):
         return
 
+    # ── Correlation filter: max MAX_SECTOR_SIGNALS per sector per day ─────────
+    if MAX_SECTOR_SIGNALS > 0:
+        sector = STOCK_TO_SECTOR.get(ticker, "UNKNOWN")
+        if _sector_counts.get(sector, 0) >= MAX_SECTOR_SIGNALS:
+            logger.info(f"Skip sector limit: {ticker} ({sector}) already has {MAX_SECTOR_SIGNALS} trades today")
+            return
+
     ok, reason = _can_trade(grade, confidence, signal_type)
     if not ok:
         logger.info(f"Skip [{reason}]: {ticker} {direction} {grade}")
@@ -260,6 +270,8 @@ def _execute_signal(
 
     if orders:
         _mark_signaled(ticker, direction)
+        sector = STOCK_TO_SECTOR.get(ticker, "UNKNOWN")
+        _sector_counts[sector] = _sector_counts.get(sector, 0) + 1
         register_entry(
             order_id=str(orders[0].id), ticker=ticker,
             signal_type=signal_type, grade=grade,
