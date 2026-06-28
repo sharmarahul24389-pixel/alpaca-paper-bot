@@ -12,10 +12,15 @@ ALPACA_PAPER      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
 FILL_CHECK_INTERVAL = 5
 
 # Auto-trade filters
-AUTO_MIN_GRADE      = os.getenv("AUTO_MIN_GRADE", "B")
-AUTO_MIN_CONFIDENCE = int(os.getenv("AUTO_MIN_CONFIDENCE", "65"))
-AUTO_MAX_DAILY_LOSS = float(os.getenv("AUTO_MAX_DAILY_LOSS", "1000"))
-AUTO_MAX_SIGNALS    = int(os.getenv("AUTO_MAX_SIGNALS", "3"))
+AUTO_MIN_GRADE        = os.getenv("AUTO_MIN_GRADE", "B")
+AUTO_MIN_CONFIDENCE   = int(os.getenv("AUTO_MIN_CONFIDENCE", "65"))
+AUTO_MAX_DAILY_LOSS   = float(os.getenv("AUTO_MAX_DAILY_LOSS", "1000"))
+# No hard signal count limit — brain governs quality, loss limit governs risk
+AUTO_MAX_SIGNALS      = int(os.getenv("AUTO_MAX_SIGNALS", "999"))
+
+# Daily profit target: after hitting this, only Grade A signals are taken
+DAILY_PROFIT_TARGET   = float(os.getenv("DAILY_PROFIT_TARGET", "500"))
+GRADE_A_ONLY_LABEL    = "A"  # grade required after target hit
 
 # ── Twilio WhatsApp ────────────────────────────────────────────────────────────
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID")

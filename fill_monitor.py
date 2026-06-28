@@ -1,26 +1,44 @@
 """
 fill_monitor.py — Polls Alpaca every 5 min for order fills and position changes.
-
-Sends WhatsApp alerts when:
-  - A BUY/SELL order is filled (entry confirmed)
-  - A take-profit fires (scale-out at +1R or close at +2R)
-  - A stop-loss fires (loss)
-  - A daily P&L threshold is breached
+Also tracks realized daily P&L and records completed trades to the brain.
 """
 import logging
-import time
 from datetime import datetime
 
 import pytz
 
 from alpaca_trader import get_recent_orders, get_account, close_all_positions, get_open_positions
-from config import AUTO_MAX_DAILY_LOSS, TIMEZONE
+from config import AUTO_MAX_DAILY_LOSS, DAILY_PROFIT_TARGET, TIMEZONE
+import brain as _brain
 
 logger = logging.getLogger(__name__)
 _ET = pytz.timezone(TIMEZONE)
 
-# Track which order IDs we've already alerted on
 _alerted_orders: set[str] = set()
+
+# Realized P&L accumulated today from closed orders (entry fills excluded)
+_realized_pnl: float = 0.0
+# Map order_id → (ticker, signal_type, grade, direction, entry_price, qty)
+_pending_entries: dict[str, dict] = {}
+
+
+def register_entry(order_id: str, ticker: str, signal_type: str,
+                   grade: str, direction: str, entry: float, qty: int):
+    """Call from main._execute_signal() so we can compute P&L on close."""
+    _pending_entries[order_id] = dict(
+        ticker=ticker, signal_type=signal_type, grade=grade,
+        direction=direction, entry=entry, qty=qty,
+    )
+
+
+def get_daily_pnl() -> float:
+    return _realized_pnl
+
+
+def reset_daily_pnl():
+    global _realized_pnl
+    _realized_pnl = 0.0
+    _alerted_orders.clear()
 
 
 def _now_et() -> str:
@@ -28,124 +46,134 @@ def _now_et() -> str:
 
 
 def check_fills(send_fn) -> None:
-    """
-    Check Alpaca for newly filled/closed orders.
-    send_fn: callable that takes a str and sends a WhatsApp message.
-    """
-    global _alerted_orders
+    global _realized_pnl
 
-    orders = get_recent_orders(status="all", limit=100)
+    orders  = get_recent_orders(status="all", limit=150)
     account = get_account()
 
-    # ── Hard loss limit check ─────────────────────────────────────────────────
+    # ── Daily loss limit check ────────────────────────────────────────────────
     if account:
         day_pnl = account.get("day_pnl", 0)
         if day_pnl <= -AUTO_MAX_DAILY_LOSS:
-            logger.warning(f"Hard loss limit hit: day P&L ${day_pnl:,.0f}")
+            logger.warning(f"Hard loss limit: day P&L ${day_pnl:,.0f}")
             send_fn(
-                f"🚨 HARD LOSS LIMIT HIT\n"
-                f"\n"
+                f"HARD LOSS LIMIT HIT\n\n"
                 f"Day P&L: ${day_pnl:,.0f}  (limit: -${AUTO_MAX_DAILY_LOSS:,.0f})\n"
-                f"Closing ALL positions and cancelling ALL orders now.\n"
-                f"\n"
-                f"⏰ {_now_et()}"
+                f"Closing ALL positions now.\n\n"
+                f"{_now_et()}"
             )
             close_all_positions()
             return
 
     for order in orders:
-        oid = str(order.id)
+        oid    = str(order.id)
+        status = str(order.status)
+
         if oid in _alerted_orders:
             continue
 
-        status = str(order.status)
-
         if status == "filled":
             _alerted_orders.add(oid)
-            _handle_fill(order, send_fn)
+            pnl = _handle_fill(order, send_fn)
+            if pnl is not None:
+                _realized_pnl += pnl
+                _brain.update_daily_pnl(_realized_pnl)
+
+                # Record to brain if we have entry context
+                cid = str(order.client_order_id or "")
+                for entry_oid, ctx in list(_pending_entries.items()):
+                    if ctx["ticker"] == order.symbol and pnl != 0:
+                        result = "WIN" if pnl > 0 else ("LOSS" if pnl < -10 else "SCRATCH")
+                        _brain.record_trade(
+                            ticker=ctx["ticker"],
+                            signal_type=ctx["signal_type"],
+                            grade=ctx["grade"],
+                            direction=ctx["direction"],
+                            pnl=pnl,
+                            result=result,
+                        )
+                        break
 
         elif status in ("cancelled", "expired", "rejected"):
             _alerted_orders.add(oid)
             _handle_cancel(order, send_fn)
 
 
-def _handle_fill(order, send_fn) -> None:
-    """Format and send a fill alert."""
-    ticker    = order.symbol
-    side      = str(order.side).upper()
-    qty       = int(float(order.filled_qty))
-    fill_px   = float(order.filled_avg_price or 0)
-    now       = _now_et()
+def _handle_fill(order, send_fn) -> float | None:
+    """Send WhatsApp fill alert; return realized P&L for closing legs (None for entries)."""
+    ticker  = order.symbol
+    side    = str(order.side).upper()
+    qty     = int(float(order.filled_qty))
+    fill_px = float(order.filled_avg_price or 0)
+    now     = _now_et()
+    cid     = str(order.client_order_id or "")
 
-    # Determine leg type from client_order_id tag
-    cid = str(order.client_order_id or "")
-    if "scale-out" in cid:
-        leg_label = "📤 +1R SCALE-OUT FILLED"
-        emoji = "💰"
-    elif "close-all" in cid:
-        leg_label = "🏁 +2R CLOSE-ALL FILLED"
-        emoji = "✅"
-    elif "stop-loss" in cid.lower() or (order.order_class and "bracket" in str(order.order_class).lower()):
-        # Could be stop triggered — check side vs original
-        leg_label = "📥 ENTRY FILLED"
-        emoji = "📋"
+    realized_pnl = None
+
+    if "scale-out" in cid or "close-all" in cid:
+        # Closing leg — compute P&L against known entry
+        label = "+1R SCALE-OUT FILLED" if "scale-out" in cid else "+2R CLOSE-ALL FILLED"
+        emoji = "💰" if "scale-out" in cid else "✅"
+
+        # Look up entry price
+        for ctx in _pending_entries.values():
+            if ctx["ticker"] == ticker:
+                if ctx["direction"] == "BUY":
+                    realized_pnl = (fill_px - ctx["entry"]) * qty
+                else:
+                    realized_pnl = (ctx["entry"] - fill_px) * qty
+                break
+
+        pnl_str = f"\n  P&L: ${realized_pnl:+,.0f}" if realized_pnl is not None else ""
+        daily_str = f"\n  Day total: ${_realized_pnl + (realized_pnl or 0):+,.0f}"
+        target_note = ""
+        new_total = _realized_pnl + (realized_pnl or 0)
+        if new_total >= DAILY_PROFIT_TARGET:
+            target_note = "\n\n  TARGET HIT — Grade A signals only from now."
+
+        msg = (
+            f"{emoji} {label}\n\n"
+            f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}"
+            f"{pnl_str}{daily_str}{target_note}\n\n"
+            f"{now}"
+        )
     else:
-        leg_label = "📋 ORDER FILLED"
-        emoji = "📋"
+        # Entry fill
+        label = "ENTRY FILLED"
+        msg = (
+            f"ENTRY FILLED\n\n"
+            f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}\n"
+            f"  Order: {oid[:8]}...\n\n"
+            f"{now}"
+        )
 
-    # Try to get P&L from legs if it's a closing order
-    pnl_str = ""
-    if hasattr(order, "legs") and order.legs:
-        for leg in order.legs:
-            if getattr(leg, "filled_avg_price", None):
-                pass  # Alpaca legs don't expose P&L directly
-
-    msg = (
-        f"{emoji} {leg_label}\n"
-        f"\n"
-        f"  {ticker}  {side}  {qty} shares\n"
-        f"  Fill price: ${fill_px:.2f}\n"
-        f"  Order ID:   {str(order.id)[:8]}...\n"
-        f"\n"
-        f"⏰ {now}"
-    )
-
-    logger.info(f"Fill alert: {ticker} {side} {qty} @ {fill_px}")
+    logger.info(f"Fill: {ticker} {side} {qty} @ {fill_px}  pnl={realized_pnl}")
     send_fn(msg)
+    return realized_pnl
 
 
 def _handle_cancel(order, send_fn) -> None:
-    """Alert on cancelled/rejected orders."""
     ticker = order.symbol
     side   = str(order.side).upper()
     qty    = int(float(order.qty or 0))
     reason = str(order.status)
-    now    = _now_et()
+    cid    = str(order.client_order_id or "")
 
-    # Don't alert on routine EOD cancellations (too noisy)
-    cid = str(order.client_order_id or "")
     if "close-all" in cid or "scale-out" in cid:
-        return   # part of a bracket that already resolved
+        return  # routine bracket cleanup
 
-    msg = (
-        f"⚠️ ORDER {reason.upper()}\n"
-        f"\n"
-        f"  {ticker}  {side}  {qty} shares\n"
-        f"  Order ID: {str(order.id)[:8]}...\n"
-        f"\n"
-        f"⏰ {now}"
+    send_fn(
+        f"ORDER {reason.upper()}\n\n"
+        f"  {ticker}  {side}  {qty} shares\n\n"
+        f"{_now_et()}"
     )
-
-    logger.info(f"Cancel alert: {ticker} {side} — {reason}")
-    send_fn(msg)
+    logger.info(f"Cancel: {ticker} {side} — {reason}")
 
 
 def get_positions_summary() -> str:
-    """Format current open positions for EOD/status messages."""
     positions = get_open_positions()
     if not positions:
         return "No open positions."
-
     lines = [f"Open positions ({len(positions)}):"]
     for p in positions:
         side    = "LONG" if float(p.qty) > 0 else "SHORT"
