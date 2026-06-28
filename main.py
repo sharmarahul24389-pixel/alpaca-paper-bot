@@ -1,17 +1,19 @@
 """
-main.py — Alpaca Paper Trading Bot v2 (Adaptive Brain)
+main.py — Alpaca Paper Trading Bot v3 (Full Intelligence)
 
-Flow per signal:
-  1. Brain checks: regime, confidence threshold, skip list, position size mult
-  2. Daily mode: if day P&L >= $500 target → Grade A only
-  3. Loss guard: if day P&L <= -$1000 → stop trading
-  4. Place 2x bracket orders on Alpaca paper account
-  5. Fill monitor: poll fills, record trade outcomes to brain, send WhatsApp
-  6. Brain learns: adjusts thresholds based on rolling win rates
+Signal pipeline per trade:
+  1. Trend alignment  (20-day MA — biggest single win-rate driver)
+  2. Earnings block   (skip ORB/Quant within 3 days of earnings)
+  3. Catalyst score   (Trump post, Congress trade, SEC 8-K, sector ETF)
+  4. Brain filters    (adaptive confidence, skip underperforming types)
+  5. Weekly loss mult (reduce size if week is in drawdown)
+  6. Daily mode       (Grade A only after $500 target, halt at -$1000)
+  7. Place 2x bracket orders on Alpaca paper account
+  8. Fill monitor     (P&L tracking, trailing stop after +1R, brain recording)
+  9. Time stop        (close flat positions after 90 min)
 """
 import gc
 import logging
-import os
 import time
 from datetime import datetime
 
@@ -26,6 +28,8 @@ from config import (
     MAX_SWING_SIGNALS, AUTO_MIN_GRADE, AUTO_MIN_CONFIDENCE,
     AUTO_MAX_SIGNALS, FILL_CHECK_INTERVAL,
     DAILY_PROFIT_TARGET, GRADE_A_ONLY_LABEL, AUTO_MAX_DAILY_LOSS,
+    TIME_STOP_MINUTES, TREND_FILTER_ENABLED, CATALYST_HARD_SKIP_SCORE,
+    CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS,
 )
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
@@ -39,6 +43,7 @@ from trend_filter import get_market_regime, get_daily_trend, get_relative_streng
 from alpaca_trader import (
     place_bracket_orders, get_account,
     cancel_all_orders, close_all_positions,
+    close_position, move_stop_to_breakeven,
 )
 from fill_monitor import (
     check_fills, get_positions_summary, get_daily_pnl,
@@ -46,6 +51,10 @@ from fill_monitor import (
 )
 from notifier import send_alert, send_signal_alert, send_eod_summary, send_startup_message
 import brain as _brain
+from catalyst import (
+    check_trend_alignment, get_catalyst_score,
+    get_trump_catalyst, get_congress_buys,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,9 +67,9 @@ _ET = pytz.timezone(TIMEZONE)
 _signals_today:    list[dict] = []
 _tickers_signaled: set[str]   = set()
 _signaled_date:    str        = ""
-_momentum_longs:      list[str] = []
-_momentum_shorts:     list[str] = []
-_momentum_rank_date:  str       = ""
+_momentum_longs:   list[str]  = []
+_momentum_shorts:  list[str]  = []
+_momentum_rank_date: str      = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,9 +78,9 @@ def is_market_open() -> bool:
     now = datetime.now(_ET)
     if now.weekday() >= 5:
         return False
-    open_t  = now.replace(hour=MARKET_OPEN_HOUR,  minute=MARKET_OPEN_MINUTE,  second=0, microsecond=0)
-    close_t = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
-    return open_t <= now <= close_t
+    o = now.replace(hour=MARKET_OPEN_HOUR,  minute=MARKET_OPEN_MINUTE,  second=0, microsecond=0)
+    c = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
+    return o <= now <= c
 
 
 def _reset_daily_state() -> None:
@@ -95,49 +104,58 @@ def _mark_signaled(ticker: str, direction: str) -> None:
 
 
 def _mode() -> str:
-    """Current trading mode based on day's realized P&L."""
     pnl = get_daily_pnl()
     if pnl >= DAILY_PROFIT_TARGET:
-        return "A_ONLY"      # hit target — Grade A only
+        return "A_ONLY"
     if pnl <= -AUTO_MAX_DAILY_LOSS:
-        return "HALTED"      # loss limit — no trading
+        return "HALTED"
     return "NORMAL"
 
 
 def _can_trade(grade: str, confidence: int, signal_type: str) -> tuple[bool, str]:
-    """Returns (ok, reason). Checks mode, brain params, grade, confidence."""
     _reset_daily_state()
+
+    # Weekly halt check
+    w_mult = _brain.get_weekly_size_mult()
+    if w_mult == 0.0:
+        return False, "weekly loss halt — resumes Monday"
 
     mode = _mode()
     if mode == "HALTED":
         return False, "daily loss limit reached"
-
     if mode == "A_ONLY" and grade != GRADE_A_ONLY_LABEL:
-        return False, f"target hit — Grade A only (got {grade})"
+        return False, f"$500 target hit — Grade A only (got {grade})"
 
     # Static grade filter
     if AUTO_MIN_GRADE == "A" and grade not in ("A",):
-        return False, f"grade {grade} below min A"
+        return False, f"grade {grade} below configured min A"
     if AUTO_MIN_GRADE == "B" and grade not in ("A", "B"):
-        return False, f"grade {grade} below min B"
+        return False, f"grade {grade} below configured min B"
 
     # Brain adaptive params
     params = _brain.get_params()
-    skip   = params.get("skip_types", [])
-    if signal_type.upper() in [s.upper() for s in skip]:
-        return False, f"{signal_type} skipped by brain (low WR)"
+    if signal_type.upper() in [s.upper() for s in params.get("skip_types", [])]:
+        return False, f"{signal_type} paused by brain (low WR)"
 
-    # Brain-adjusted confidence threshold
-    conf_key = f"min_confidence_{signal_type.lower()}"
-    brain_min_conf = params.get(conf_key, AUTO_MIN_CONFIDENCE)
-    effective_min  = max(AUTO_MIN_CONFIDENCE, brain_min_conf)
-    if confidence < effective_min:
-        return False, f"confidence {confidence}% < {effective_min}% (brain-adjusted)"
+    conf_key     = f"min_confidence_{signal_type.lower()}"
+    brain_min    = params.get(conf_key, AUTO_MIN_CONFIDENCE)
+    eff_min      = max(AUTO_MIN_CONFIDENCE, brain_min)
+    if confidence < eff_min:
+        return False, f"confidence {confidence}% < {eff_min}% (brain-adjusted)"
 
     if len(_signals_today) >= AUTO_MAX_SIGNALS:
         return False, "max daily signals reached"
 
     return True, ""
+
+
+def _earnings_too_close(ticker: str, block_days: int = EARNINGS_BLOCK_DAYS) -> bool:
+    """Return True if earnings within block_days — skip ORB/Quant to avoid coin-flip."""
+    try:
+        dte = get_days_to_earnings(ticker)
+        return dte is not None and 0 <= dte <= block_days
+    except Exception:
+        return False
 
 
 def _get_momentum_ranked() -> tuple[list[str], list[str]]:
@@ -159,45 +177,81 @@ def _execute_signal(
     entry: float, stop: float, target: float,
     reasons: list[str], signal_type: str = "ORB",
     spy_pct: float | None = None, regime: str = "",
+    skip_earnings_check: bool = False,
 ) -> None:
+
     if _already_signaled(ticker, direction):
         return
 
     ok, reason = _can_trade(grade, confidence, signal_type)
     if not ok:
-        logger.info(f"Signal skipped [{reason}]: {ticker} {direction} {grade}")
+        logger.info(f"Skip [{reason}]: {ticker} {direction} {grade}")
         return
 
-    # Position sizing with brain's size multiplier
-    params = _brain.get_params()
-    pos    = calculate_position(entry, stop, grade)
+    # ── Earnings block (ORB & QUANT only — swing already checks) ──────────────
+    if not skip_earnings_check and signal_type in ("ORB", "QUANT"):
+        if _earnings_too_close(ticker):
+            logger.info(f"Skip earnings risk: {ticker} within {EARNINGS_BLOCK_DAYS}d of report")
+            return
+
+    # ── Trend alignment (20-day MA) ───────────────────────────────────────────
+    if TREND_FILTER_ENABLED:
+        trend_ok, trend_reason = check_trend_alignment(ticker, direction)
+        if not trend_ok:
+            # Allow override only for Grade A + strong catalyst
+            logger.info(f"Trend miss: {ticker} {direction} — {trend_reason}")
+            # Will be overridden below if catalyst strongly confirms
+
+    # ── Catalyst scoring ──────────────────────────────────────────────────────
+    cat_score, cat_reasons = get_catalyst_score(ticker, direction)
+    all_reasons = list(reasons) + cat_reasons
+
+    # Hard skip: catalyst strongly opposes AND (trend miss OR grade < A)
+    if cat_score <= CATALYST_HARD_SKIP_SCORE:
+        logger.info(f"Skip catalyst: {ticker} {direction} score={cat_score}  {cat_reasons}")
+        return
+
+    # If trend misaligned: need catalyst to confirm OR must be Grade A
+    if TREND_FILTER_ENABLED and not trend_ok:
+        if cat_score < 2 and grade != "A":
+            logger.info(f"Skip trend+catalyst: {ticker} {direction} grade={grade} cat={cat_score}")
+            return
+        # Grade A with good catalyst can override trend miss
+        all_reasons = [trend_reason] + all_reasons
+
+    # If catalyst opposes weakly (-2 to -1): require Grade A
+    if cat_score <= CATALYST_GRADE_A_SCORE and grade != "A":
+        logger.info(f"Skip weak catalyst: {ticker} {direction} score={cat_score} grade={grade}")
+        return
+
+    # ── Position sizing (brain mult × weekly mult) ────────────────────────────
+    params     = _brain.get_params()
+    brain_mult = params.get("position_size_mult", 1.0)
+    week_mult  = _brain.get_weekly_size_mult()
+    # Catalyst boost: strong confirmation (+2) → slight size increase
+    cat_mult   = 1.15 if cat_score >= 2 else 1.0
+    total_mult = brain_mult * week_mult * cat_mult
+
+    pos = calculate_position(entry, stop, grade)
     if not pos:
         logger.warning(f"Position sizing failed: {ticker}")
         return
 
-    mult   = params.get("position_size_mult", 1.0)
-    units  = max(1, round(pos["units"] * mult))
+    units  = max(1, round(pos["units"] * total_mult))
     r_dist = abs(entry - stop)
     r1     = round(entry + r_dist     if direction=="BUY" else entry - r_dist,     2)
     r2     = round(entry + 2 * r_dist if direction=="BUY" else entry - 2 * r_dist, 2)
 
-    pnl = get_daily_pnl()
-    mode = _mode()
-
-    # WhatsApp alert includes daily P&L context and brain mode
-    mode_note = ""
-    if mode == "A_ONLY":
-        mode_note = "  [TARGET HIT - Grade A only mode]\n"
-
+    # ── WhatsApp alert ────────────────────────────────────────────────────────
     send_signal_alert(
         ticker=ticker, direction=direction, grade=grade,
         entry=entry, stop=stop, r1_price=r1, r2_price=r2,
         units=units, risk_amount=pos["risk_amount"], target_pnl=pos["target_pnl"],
-        reasons=reasons, confidence=confidence, signal_type=signal_type,
+        reasons=all_reasons, confidence=confidence, signal_type=signal_type,
         spy_pct=spy_pct, regime=regime,
     )
 
-    # Place on Alpaca
+    # ── Place on Alpaca ───────────────────────────────────────────────────────
     tag    = f"{ticker}_{direction}_{signal_type}"
     orders = place_bracket_orders(
         ticker=ticker, direction=direction, units=units,
@@ -206,49 +260,49 @@ def _execute_signal(
 
     if orders:
         _mark_signaled(ticker, direction)
-        entry_order_id = str(orders[0].id) if orders else ""
         register_entry(
-            order_id=entry_order_id, ticker=ticker,
+            order_id=str(orders[0].id), ticker=ticker,
             signal_type=signal_type, grade=grade,
             direction=direction, entry=entry, qty=units,
         )
         _signals_today.append({
-            "ticker": ticker, "direction": direction, "grade": grade,
-            "entry": entry, "stop": stop, "r1": r1, "r2": r2,
-            "units": units, "signal_type": signal_type,
+            "ticker":     ticker,
+            "direction":  direction,
+            "grade":      grade,
+            "entry":      entry,
+            "stop":       stop,
+            "r1":         r1,
+            "r2":         r2,
+            "units":      units,
+            "signal_type":signal_type,
+            "opened_at":  datetime.now(_ET),   # for time-based stop
         })
         logger.info(
-            f"Auto-trade placed: {ticker} {direction} {grade} "
-            f"x{units} (mult={mult:.2f})  day_pnl=${pnl:+.0f}"
+            f"Trade placed: {ticker} {direction} {grade} x{units} "
+            f"(brain={brain_mult:.2f} wk={week_mult:.2f} cat={cat_mult:.2f}) "
+            f"cat_score={cat_score:+d}  day_pnl=${get_daily_pnl():+.0f}"
         )
-        time.sleep(1)
+        time.sleep(0.5)
     else:
-        logger.error(f"Auto-trade FAILED: {ticker} {direction}")
+        logger.error(f"Order FAILED: {ticker} {direction}")
         send_alert(f"ORDER FAILED\n{ticker} {direction} — Alpaca rejected. Check logs.")
 
 
 # ── Scan jobs ─────────────────────────────────────────────────────────────────
 
 def run_orb_scan() -> None:
-    if not is_market_open():
+    if not is_market_open() or _mode() == "HALTED":
         return
-    if _mode() == "HALTED":
-        return
-
     logger.info("=== ORB scan ===")
-    regime    = get_market_regime()
-    spy_pct   = get_spy_day_pct()
-    brain_reg = _brain.get_regime()
+    regime  = get_market_regime()
+    spy_pct = get_spy_day_pct()
 
     movers = get_top_movers(count=TOP_MOVERS_COUNT, min_price=MIN_PRICE, min_volume=MIN_VOLUME)
     for mover in movers:
-        ticker = mover["ticker"]
+        ticker   = mover["ticker"]
         analysis = analyze(ticker)
-        if not analysis:
+        if not analysis or abs(analysis.get("day_pct", 0)) < 0.5:
             continue
-        if abs(analysis.get("day_pct", 0)) < 0.5 and ticker != "QQQ":
-            continue
-
         analysis.update({
             "market_regime":     regime,
             "spy_day_pct":       spy_pct,
@@ -257,7 +311,6 @@ def run_orb_scan() -> None:
             "pivot_levels":      get_pivot_levels(ticker),
             "options_sentiment": get_options_sentiment(ticker),
         })
-
         signal = generate_signal(analysis)
         if signal.direction != "WAIT" and signal.confidence >= MIN_CONFIDENCE:
             _execute_signal(
@@ -265,34 +318,27 @@ def run_orb_scan() -> None:
                 grade=signal.grade, confidence=signal.confidence,
                 entry=signal.entry, stop=signal.stop_loss, target=signal.target,
                 reasons=signal.reasons, signal_type="ORB",
-                spy_pct=spy_pct, regime=f"{regime}/{brain_reg}",
+                spy_pct=spy_pct, regime=regime,
             )
-
-    logger.info("=== ORB scan done ===")
+    logger.info("=== ORB done ===")
     gc.collect()
 
 
 def run_quant_scan() -> None:
-    if not is_market_open():
+    if not is_market_open() or _mode() == "HALTED":
         return
-    if _mode() == "HALTED":
-        return
-
     now_et = datetime.now(_ET)
     mins   = now_et.hour * 60 + now_et.minute
     if not (630 <= mins < 840):
         return
-
     logger.info("=== Quant scan ===")
     longs, shorts = _get_momentum_ranked()
-    candidates    = list(dict.fromkeys(longs + shorts))
-    z_map         = batch_z_scores(candidates)
+    z_map         = batch_z_scores(list(dict.fromkeys(longs + shorts)))
     if not z_map:
         return
-
-    ranked = sorted(z_map.keys(), key=lambda t: abs(z_map[t]["z_score"]), reverse=True)
+    ranked = sorted(z_map, key=lambda t: abs(z_map[t]["z_score"]), reverse=True)
     for ticker in ranked:
-        rank = longs.index(ticker) + 1 if ticker in longs else (shorts.index(ticker) + 1 if ticker in shorts else None)
+        rank = longs.index(ticker)+1 if ticker in longs else (shorts.index(ticker)+1 if ticker in shorts else None)
         sig  = generate_quant_signal(ticker, z_data=z_map[ticker], rank=rank)
         if sig is None or sig.direction == "WAIT" or sig.confidence < MIN_CONFIDENCE:
             continue
@@ -302,17 +348,13 @@ def run_quant_scan() -> None:
             entry=sig.entry, stop=sig.stop_loss, target=sig.target,
             reasons=sig.reasons, signal_type="QUANT",
         )
-
-    logger.info("=== Quant scan done ===")
+    logger.info("=== Quant done ===")
     gc.collect()
 
 
 def run_swing_scan() -> None:
-    if not is_market_open():
+    if not is_market_open() or _mode() == "HALTED":
         return
-    if _mode() == "HALTED":
-        return
-
     logger.info("=== Swing scan ===")
     movers = get_top_movers(count=10, min_price=MIN_PRICE, min_volume=MIN_VOLUME)
     sent   = 0
@@ -320,10 +362,8 @@ def run_swing_scan() -> None:
         if sent >= MAX_SWING_SIGNALS:
             break
         ticker = mover["ticker"]
-        if get_days_to_earnings(ticker) is not None:
-            dte = get_days_to_earnings(ticker)
-            if 0 <= dte <= 10:
-                continue
+        if _earnings_too_close(ticker, block_days=10):
+            continue
         analysis = analyze_swing(ticker)
         if not analysis:
             continue
@@ -335,10 +375,10 @@ def run_swing_scan() -> None:
             grade=getattr(signal, "grade", "C"), confidence=signal.confidence,
             entry=signal.entry, stop=signal.stop_loss, target=signal.target,
             reasons=signal.reasons, signal_type="SWING",
+            skip_earnings_check=True,   # we already checked above
         )
         sent += 1
-
-    logger.info(f"=== Swing scan done ({sent} signals) ===")
+    logger.info(f"=== Swing done ({sent}) ===")
 
 
 def run_fill_check() -> None:
@@ -350,14 +390,62 @@ def run_fill_check() -> None:
         logger.warning(f"Fill check error: {e}")
 
 
+def run_time_stop_check() -> None:
+    """
+    Close positions that are flat (within ±0.3R) after TIME_STOP_MINUTES.
+    Frees capital for better setups instead of holding dead trades.
+    """
+    if not is_market_open() or TIME_STOP_MINUTES <= 0:
+        return
+    _reset_daily_state()
+    from alpaca_trader import get_open_positions
+    now    = datetime.now(_ET)
+    open_p = {p.symbol: p for p in get_open_positions()}
+
+    for sig in _signals_today:
+        ticker    = sig["ticker"]
+        opened_at = sig.get("opened_at")
+        if not opened_at or ticker not in open_p:
+            continue
+        age_min = (now - opened_at).total_seconds() / 60
+        if age_min < TIME_STOP_MINUTES:
+            continue
+
+        pos    = open_p[ticker]
+        upnl   = float(pos.unrealized_pl)
+        qty    = abs(int(float(pos.qty)))
+        r_dist = abs(sig["entry"] - sig["stop"]) * qty
+        flat   = r_dist > 0 and abs(upnl) < r_dist * 0.3
+
+        if flat:
+            logger.info(f"Time stop: {ticker} flat after {age_min:.0f} min (P&L ${upnl:+.0f}) — closing")
+            if close_position(ticker):
+                send_alert(
+                    f"TIME STOP — {ticker}\n\n"
+                    f"  Held {age_min:.0f} min with no move\n"
+                    f"  Closed near breakeven: ${upnl:+.0f}\n"
+                    f"  Capital freed for better setup"
+                )
+
+
 def run_brain_update() -> None:
-    """Refresh market regime and log brain status — runs at 9:25 AM daily."""
+    """9:25 AM: refresh regime, pull congress + Trump catalysts, log brain status."""
     _brain.get_regime(force_refresh=True)
-    logger.info(_brain.summary())
+    trump    = get_trump_catalyst()
+    congress = get_congress_buys()
+
+    trump_note    = trump["summary"] if trump["active"] else "No active Trump posts"
+    congress_note = f"{len(congress)} active tickers" if congress else "None"
+
+    status = _brain.summary()
+    logger.info(status)
     send_alert(
-        f"Brain update\n\n"
-        f"{_brain.summary()}\n\n"
-        f"Day mode: {_mode()}  |  Day P&L: ${get_daily_pnl():+.0f}"
+        f"Morning Brain Update\n\n"
+        f"{status}\n\n"
+        f"Trump: {trump_note}\n"
+        f"Congress trades: {congress_note}\n"
+        f"Day mode: {_mode()}  |  Day P&L: ${get_daily_pnl():+.0f}\n"
+        f"Week P&L: ${_brain.get_weekly_pnl():+.0f}"
     )
 
 
@@ -367,14 +455,12 @@ def run_position_status() -> None:
     acct    = get_account()
     pos     = get_positions_summary()
     day_pnl = acct.get("day_pnl", 0)
-    pct     = acct.get("day_pnl_pct", 0)
-    mode    = _mode()
     send_alert(
         f"MID-DAY STATUS  (1 PM ET)\n\n"
-        f"Day P&L: ${day_pnl:+,.0f} ({pct:+.2f}%)\n"
-        f"Mode: {mode}  |  Target: ${DAILY_PROFIT_TARGET:,.0f}\n"
-        f"Equity: ${acct.get('equity', 0):,.0f}\n"
-        f"Trades today: {len(_signals_today)}\n\n"
+        f"Day P&L  : ${day_pnl:+,.0f}  |  Mode: {_mode()}\n"
+        f"Week P&L : ${_brain.get_weekly_pnl():+,.0f}\n"
+        f"Equity   : ${acct.get('equity',0):,.0f}\n"
+        f"Trades   : {len(_signals_today)}\n\n"
         f"{pos}\n\n"
         f"{_brain.summary()}"
     )
@@ -384,37 +470,33 @@ def run_eod() -> None:
     logger.info("EOD cleanup")
     cancel_all_orders()
     time.sleep(2)
-
     acct = get_account()
     send_eod_summary(account=acct, trades_today=_signals_today)
-
     pos = get_positions_summary()
     if "No open" not in pos:
         send_alert(f"Open positions after close:\n{pos}")
-
     _brain.update_daily_pnl(get_daily_pnl())
-    logger.info(f"EOD done. Day P&L: ${acct.get('day_pnl', 0):+,.0f}")
+    logger.info(f"EOD: day P&L ${acct.get('day_pnl',0):+,.0f}  week ${_brain.get_weekly_pnl():+,.0f}")
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    logger.info("Alpaca Paper Bot starting...")
+    logger.info("Alpaca Paper Bot v3 (Full Intelligence) starting...")
     send_startup_message()
 
     sched = BlockingScheduler(timezone=TIMEZONE)
 
-    # ORB: 9:30-10:30 every 5 min
+    # ORB: 9:30–10:30 every 5 min, then every 30 min until 3:30
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=9,  minute="30,35,40,45,50,55", id="orb_9")
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=10, minute="0,5,10,15,20,25,30",  id="orb_10")
-    # ORB: 11 AM – 3:30 PM every 30 min
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=f"11-{MARKET_CLOSE_HOUR}", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
 
-    # Quant: 10:30 AM – 2:00 PM every 30 min
+    # Quant: 10:30 AM – 2 PM every 30 min
     sched.add_job(run_quant_scan, "cron", day_of_week="mon-fri",
                   hour=10, minute=30, id="quant_1030")
     sched.add_job(run_quant_scan, "cron", day_of_week="mon-fri",
@@ -424,12 +506,16 @@ def main() -> None:
     sched.add_job(run_swing_scan, "cron", day_of_week="mon-fri",
                   hour=10, minute=0, id="swing")
 
-    # Fill monitor: every 5 min
+    # Fill check: every 5 min
     sched.add_job(run_fill_check, "cron", day_of_week="mon-fri",
                   hour=f"9-{MARKET_CLOSE_HOUR}", minute=f"*/{FILL_CHECK_INTERVAL}",
                   id="fills", misfire_grace_time=60)
 
-    # Brain refresh + regime update at market open
+    # Time stop: every 30 min during market hours
+    sched.add_job(run_time_stop_check, "cron", day_of_week="mon-fri",
+                  hour=f"10-{MARKET_CLOSE_HOUR}", minute="0,30", id="time_stop")
+
+    # Brain + catalyst refresh at 9:25 AM
     sched.add_job(run_brain_update, "cron", day_of_week="mon-fri",
                   hour=9, minute=25, id="brain_update")
 
@@ -442,27 +528,21 @@ def main() -> None:
                   hour=MARKET_CLOSE_HOUR, minute=5, id="eod")
 
     logger.info(
-        "Alpaca Paper Bot v2 (Adaptive Brain) scheduler ready:\n"
-        "  ORB scan      9:30-10:30 AM ET (every 5 min)\n"
-        "  ORB scan      11 AM-3:30 PM ET (every 30 min)\n"
-        "  Quant scan    10:30 AM-2:00 PM ET (every 30 min)\n"
-        "  Swing scan    10:00 AM ET\n"
-        "  Fill monitor  every 5 min (market hours)\n"
-        "  Brain update  9:25 AM ET daily\n"
-        "  Mid-day ping  1:00 PM ET\n"
-        "  EOD cleanup   4:05 PM ET\n"
-        f"  Daily target  ${DAILY_PROFIT_TARGET:,.0f} then Grade-A only\n"
-        f"  Loss halt     -${AUTO_MAX_DAILY_LOSS:,.0f}"
+        "Bot v3 ready:\n"
+        "  Filters : trend(20MA) + sector ETF + earnings block + Trump/Congress/SEC\n"
+        f"  Target  : ${DAILY_PROFIT_TARGET:,.0f}/day → Grade A only after\n"
+        f"  Stops   : -${AUTO_MAX_DAILY_LOSS:,.0f} daily | time stop {TIME_STOP_MINUTES}min\n"
+        "  Brain   : adaptive confidence + position size + weekly halt\n"
+        "  9:25 AM : regime + Trump + Congress briefing sent to WhatsApp"
     )
 
     if is_market_open():
-        logger.info("Market open on startup — running initial scan")
         run_orb_scan()
 
     try:
         sched.start()
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Alpaca Bot stopped.")
+        logger.info("Bot stopped.")
 
 
 if __name__ == "__main__":

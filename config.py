@@ -20,7 +20,20 @@ AUTO_MAX_SIGNALS      = int(os.getenv("AUTO_MAX_SIGNALS", "999"))
 
 # Daily profit target: after hitting this, only Grade A signals are taken
 DAILY_PROFIT_TARGET   = float(os.getenv("DAILY_PROFIT_TARGET", "500"))
-GRADE_A_ONLY_LABEL    = "A"  # grade required after target hit
+GRADE_A_ONLY_LABEL    = "A"
+
+# Time-based stop: close flat positions after this many minutes (0 = disabled)
+TIME_STOP_MINUTES     = int(os.getenv("TIME_STOP_MINUTES", "90"))
+
+# Catalyst filters
+CATALYST_HARD_SKIP_SCORE  = int(os.getenv("CATALYST_HARD_SKIP_SCORE", "-3"))   # skip signal
+CATALYST_GRADE_A_SCORE    = int(os.getenv("CATALYST_GRADE_A_SCORE",  "-2"))    # require Grade A
+TREND_FILTER_ENABLED      = os.getenv("TREND_FILTER_ENABLED", "true").lower() == "true"
+SECTOR_FILTER_ENABLED     = os.getenv("SECTOR_FILTER_ENABLED", "true").lower() == "true"
+SEC_8K_FILTER_ENABLED     = os.getenv("SEC_8K_FILTER_ENABLED", "true").lower() == "true"
+
+# Earnings block: skip ORB/Quant within N days of earnings
+EARNINGS_BLOCK_DAYS   = int(os.getenv("EARNINGS_BLOCK_DAYS", "3"))
 
 # ── Twilio WhatsApp ────────────────────────────────────────────────────────────
 TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID")

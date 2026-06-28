@@ -137,3 +137,59 @@ def close_all_positions() -> None:
         logger.warning("ALL POSITIONS CLOSED — hard loss limit triggered")
     except Exception as e:
         logger.error(f"Close all positions failed: {e}")
+
+
+def close_position(ticker: str) -> bool:
+    """Close a single position at market (for time-based stops)."""
+    try:
+        _client().close_position(ticker)
+        logger.info(f"Position closed: {ticker}")
+        return True
+    except Exception as e:
+        logger.warning(f"Close position failed for {ticker}: {e}")
+        return False
+
+
+def move_stop_to_breakeven(ticker: str, direction: str, entry: float) -> bool:
+    """
+    After +1R scale-out fires: find open stop orders for this ticker
+    and cancel them, then place a new stop-limit at entry price.
+    This protects profits on the remaining position.
+    """
+    try:
+        client = _client()
+        orders = client.get_orders(filter=GetOrdersRequest(
+            status=QueryOrderStatus("open"), limit=50
+        ))
+        cancelled = 0
+        for o in orders:
+            if str(o.symbol) != ticker:
+                continue
+            otype = str(getattr(o, "type", "")).lower()
+            if "stop" in otype:
+                try:
+                    client.cancel_order_by_id(str(o.id))
+                    cancelled += 1
+                except Exception:
+                    pass
+
+        if cancelled == 0:
+            return False
+
+        # Place a new market stop at entry (breakeven)
+        from alpaca.trading.requests import StopOrderRequest
+        stop_side = OrderSide.SELL if direction == "BUY" else OrderSide.BUY
+        req = StopOrderRequest(
+            symbol=ticker,
+            qty=None,          # close whatever is left
+            notional=None,
+            side=stop_side,
+            time_in_force=TimeInForce.DAY,
+            stop_price=round(entry, 2),
+        )
+        client.submit_order(req)
+        logger.info(f"Stop moved to breakeven ${entry:.2f} for {ticker}")
+        return True
+    except Exception as e:
+        logger.warning(f"Move stop to breakeven failed for {ticker}: {e}")
+        return False

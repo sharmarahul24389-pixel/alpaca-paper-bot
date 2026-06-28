@@ -3,7 +3,7 @@ Adaptive brain: tracks performance, detects market regime, adjusts parameters.
 State persists in /tmp/brain_state.json between runs (resets only on new deploy).
 """
 import json, os, logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from collections import defaultdict
 
 import yfinance as yf
@@ -190,20 +190,55 @@ def get_params() -> dict:
 
 # ── Status summary ────────────────────────────────────────────────────────────
 
-def summary() -> str:
-    state  = load()
-    trades = state["trades"]
-    params = state["params"]
-    regime = state.get("last_regime", "UNKNOWN")
+def get_weekly_pnl() -> float:
+    """Sum of realized P&L for Mon-today of current week."""
+    state = load()
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    total = 0.0
+    for d, pnl in state.get("daily_pnl", {}).items():
+        try:
+            if date.fromisoformat(d) >= monday:
+                total += pnl
+        except Exception:
+            pass
+    return total
 
-    wr_all = _win_rate(trades, lookback=30)
+
+def get_weekly_size_mult() -> float:
+    """
+    Returns position size multiplier based on weekly P&L:
+      > -$1500   : 1.0 (normal)
+      > -$2500   : 0.75 (reduce)
+      > -$3500   : 0.50 (survival mode)
+      <= -$3500  : 0.0  (weekly halt — resume Monday)
+    """
+    wpnl = get_weekly_pnl()
+    if wpnl <= -3500:
+        return 0.0
+    if wpnl <= -2500:
+        return 0.50
+    if wpnl <= -1500:
+        return 0.75
+    return 1.0
+
+
+def summary() -> str:
+    state   = load()
+    trades  = state["trades"]
+    params  = state["params"]
+    regime  = state.get("last_regime", "UNKNOWN")
+    wr_all  = _win_rate(trades, lookback=30)
+    wpnl    = get_weekly_pnl()
+    w_mult  = get_weekly_size_mult()
     lines = [
-        f"Brain Status | regime={regime} | WR(30)={wr_all:.0%}",
-        f"  pos_mult={params['position_size_mult']:.2f}  "
+        f"Brain | regime={regime} | WR(30)={wr_all:.0%} | week P&L=${wpnl:+.0f}",
+        f"  size_mult={params['position_size_mult']:.2f}x  "
+        f"weekly_mult={w_mult:.2f}x  "
         f"skip={params['skip_types'] or 'none'}",
-        f"  min_conf: ORB={params['min_confidence_orb']}  "
-        f"QUANT={params['min_confidence_quant']}  "
-        f"SWING={params['min_confidence_swing']}",
-        f"  total recorded trades: {len(trades)}",
+        f"  conf: ORB≥{params['min_confidence_orb']}  "
+        f"QUANT≥{params['min_confidence_quant']}  "
+        f"SWING≥{params['min_confidence_swing']}",
+        f"  trades recorded: {len(trades)}",
     ]
     return "\n".join(lines)
