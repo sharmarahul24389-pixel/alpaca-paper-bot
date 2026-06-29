@@ -104,6 +104,10 @@ def _mark_signaled(ticker: str, direction: str) -> None:
 
 def _mode() -> str:
     pnl = get_daily_pnl()
+    # Also check Alpaca's real day P&L so Railway restarts can't bypass the halt
+    acct = get_account()
+    if acct:
+        pnl = min(pnl, acct.get("day_pnl", 0))
     if pnl >= DAILY_PROFIT_TARGET:
         return "A_ONLY"
     if pnl <= -AUTO_MAX_DAILY_LOSS:
@@ -273,6 +277,8 @@ def _execute_signal(
             "units":      units,
             "signal_type":signal_type,
             "opened_at":  datetime.now(_ET),   # for time-based stop
+            "fill_px":    entry,               # signal price; updated to actual fill by fill_monitor
+            "pnl":        0,
         })
         logger.info(
             f"Trade placed: {ticker} {direction} {grade} x{units} "

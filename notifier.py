@@ -105,11 +105,17 @@ def send_eod_summary(account: dict, trades_today: list[dict]) -> bool:
     ]
     if trades_today:
         lines.append(f"Trades today ({len(trades_today)}):")
-        for t in trades_today:
-            e = "✅" if t.get("pnl", 0) >= 0 else "❌"
+        for i, t in enumerate(trades_today, 1):
+            pnl     = t.get("pnl", 0)
+            fill_px = t.get("fill_px") or t.get("entry", 0)
+            grade   = t.get("grade", "")
+            stype   = t.get("signal_type", "ORB")
+            stop    = t.get("stop", 0)
+            e       = "✅" if pnl >= 0 else "❌"
+            pnl_str = f"${pnl:+,.0f}" if pnl != 0 else "open/pending"
             lines.append(
-                f"  {e} {t['ticker']} {t['direction']}"
-                f"  ${t.get('fill_px', 0):.2f}  P&L ${t.get('pnl', 0):+,.0f}"
+                f"  {i}. {e} {t['ticker']} {t['direction']} [{stype}/Gr.{grade}]"
+                f"  @${fill_px:.2f}  stop=${stop:.2f}  P&L {pnl_str}"
             )
     else:
         lines.append("No trades executed today.")
