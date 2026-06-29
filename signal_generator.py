@@ -137,13 +137,19 @@ def generate_signal(analysis: dict) -> Signal:
             vol_pts = 6 if vol_ratio >= VOLUME_RATIO_THRESHOLD else 3
             vol_tag = f"vol {vol_ratio:.1f}x" if vol_ratio >= VOLUME_RATIO_THRESHOLD else "low vol"
             if price > orb["high"] * 1.001:
-                buy_score += vol_pts
-                buy_reasons.insert(0, f"ORB breakout above ${orb['high']:.2f} ({rng_pct:.1f}% range, {vol_tag})")
-                orb_hit_buy = True
+                extension_pct = (price - orb["high"]) / orb["high"] * 100
+                if extension_pct <= 2.0:  # fresh breakout — within 2% of ORB high
+                    buy_score += vol_pts
+                    buy_reasons.insert(0, f"ORB breakout above ${orb['high']:.2f} ({rng_pct:.1f}% range, {vol_tag})")
+                    orb_hit_buy = True
+                # else: stale — price already ran >2% past ORB high, skip
             elif price < orb["low"] * 0.999:
-                sell_score += vol_pts
-                sell_reasons.insert(0, f"ORB breakdown below ${orb['low']:.2f} ({rng_pct:.1f}% range, {vol_tag})")
-                orb_hit_sell = True
+                extension_pct = (orb["low"] - price) / orb["low"] * 100
+                if extension_pct <= 2.0:  # fresh breakdown
+                    sell_score += vol_pts
+                    sell_reasons.insert(0, f"ORB breakdown below ${orb['low']:.2f} ({rng_pct:.1f}% range, {vol_tag})")
+                    orb_hit_sell = True
+                # else: stale — price already ran >2% past ORB low, skip
 
     # =========================================================================
     # 2. PREVIOUS DAY HIGH / LOW  (2 pts)

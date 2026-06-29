@@ -313,7 +313,9 @@ def run_orb_scan() -> None:
     for mover in movers:
         ticker   = mover["ticker"]
         analysis = analyze(ticker)
-        if not analysis or abs(analysis.get("day_pct", 0)) < 0.5:
+        day_pct_val = analysis.get("day_pct", 0) if analysis else 0
+        # Skip if not moving enough, or already too extended (ORB play is over)
+        if not analysis or abs(day_pct_val) < 0.5 or abs(day_pct_val) > 4.0:
             continue
         analysis.update({
             "market_regime":     regime,
