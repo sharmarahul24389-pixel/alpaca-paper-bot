@@ -320,7 +320,8 @@ def generate_signal(analysis: dict) -> Signal:
     # v9.3: ORB breakout required + counter-sector blocked (hard gates, not just scoring)
     if (buy_score >= MIN_SIGNAL_SCORE and buy_score > sell_score
             and orb_hit_buy                    # Change 1: ORB breakout mandatory
-            and sector_trend != "BEARISH"):    # Change 2: block counter-sector BUY
+            and sector_trend != "BEARISH"      # Change 2: block counter-sector BUY
+            and rsi < 70):                     # Change 3: don't buy very overbought stocks
         if market_regime == "BEARISH" and buy_score < MIN_SIGNAL_SCORE + regime_penalty:
             pass
         else:
@@ -343,7 +344,8 @@ def generate_signal(analysis: dict) -> Signal:
 
     if (sell_score >= MIN_SIGNAL_SCORE and sell_score > buy_score
             and orb_hit_sell                   # Change 1: ORB breakout mandatory
-            and sector_trend != "BULLISH"):    # Change 2: block counter-sector SELL
+            and sector_trend != "BULLISH"      # Change 2: block counter-sector SELL
+            and rsi > 30):                     # Change 3: don't short very oversold stocks
         if market_regime == "BULLISH" and sell_score < MIN_SIGNAL_SCORE + regime_penalty:
             pass
         else:
