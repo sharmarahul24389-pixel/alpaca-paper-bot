@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 _ET = pytz.timezone(TIMEZONE)
 
 _alerted_orders: set[str] = set()
+_halt_notified:  bool     = False   # prevents duplicate hard-loss alerts
 
 # Realized P&L accumulated today from closed orders (entry fills excluded)
 _realized_pnl: float = 0.0
@@ -36,8 +37,9 @@ def get_daily_pnl() -> float:
 
 
 def reset_daily_pnl():
-    global _realized_pnl
-    _realized_pnl = 0.0
+    global _realized_pnl, _halt_notified
+    _realized_pnl   = 0.0
+    _halt_notified  = False
     _alerted_orders.clear()
 
 
@@ -52,17 +54,20 @@ def check_fills(send_fn) -> None:
     account = get_account()
 
     # ── Daily loss limit check ────────────────────────────────────────────────
+    global _halt_notified
     if account:
         day_pnl = account.get("day_pnl", 0)
         if day_pnl <= -AUTO_MAX_DAILY_LOSS:
-            logger.warning(f"Hard loss limit: day P&L ${day_pnl:,.0f}")
-            send_fn(
-                f"HARD LOSS LIMIT HIT\n\n"
-                f"Day P&L: ${day_pnl:,.0f}  (limit: -${AUTO_MAX_DAILY_LOSS:,.0f})\n"
-                f"Closing ALL positions now.\n\n"
-                f"{_now_et()}"
-            )
-            close_all_positions()
+            if not _halt_notified:
+                _halt_notified = True
+                logger.warning(f"Hard loss limit: day P&L ${day_pnl:,.0f}")
+                send_fn(
+                    f"HARD LOSS LIMIT HIT\n\n"
+                    f"Day P&L: ${day_pnl:,.0f}  (limit: -${AUTO_MAX_DAILY_LOSS:,.0f})\n"
+                    f"Closing ALL positions now.\n\n"
+                    f"{_now_et()}"
+                )
+                close_all_positions()
             return
 
     for order in orders:
