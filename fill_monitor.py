@@ -60,14 +60,18 @@ def check_fills(send_fn) -> None:
         if day_pnl <= -AUTO_MAX_DAILY_LOSS:
             if not _halt_notified:
                 _halt_notified = True
-                logger.warning(f"Hard loss limit: day P&L ${day_pnl:,.0f}")
-                send_fn(
-                    f"HARD LOSS LIMIT HIT\n\n"
-                    f"Day P&L: ${day_pnl:,.0f}  (limit: -${AUTO_MAX_DAILY_LOSS:,.0f})\n"
-                    f"Closing ALL positions now.\n\n"
-                    f"{_now_et()}"
-                )
-                close_all_positions()
+                open_pos = get_open_positions()
+                if open_pos:
+                    logger.warning(f"Hard loss limit: day P&L ${day_pnl:,.0f}")
+                    send_fn(
+                        f"HARD LOSS LIMIT HIT\n\n"
+                        f"Day P&L: ${day_pnl:,.0f}  (limit: -${AUTO_MAX_DAILY_LOSS:,.0f})\n"
+                        f"Closing ALL positions now.\n\n"
+                        f"{_now_et()}"
+                    )
+                    close_all_positions()
+                else:
+                    logger.info(f"Hard loss limit: day P&L ${day_pnl:,.0f} — already closed, silencing")
             return
 
     for order in orders:
@@ -112,6 +116,7 @@ def _handle_fill(order, send_fn) -> float | None:
     fill_px = float(order.filled_avg_price or 0)
     now     = _now_et()
     cid     = str(order.client_order_id or "")
+    oid     = str(order.id)
 
     realized_pnl = None
 

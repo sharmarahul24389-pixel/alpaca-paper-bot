@@ -34,7 +34,6 @@ from config import (
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
 from position_sizer import calculate_position
-from quant_signals import batch_z_scores, generate_quant_signal, rank_momentum
 from scanner import get_top_movers, _USER_WATCHLIST
 from signal_generator import generate_signal
 from swing_analyzer import analyze_swing, generate_swing_signal
@@ -69,9 +68,6 @@ _signals_today:    list[dict]  = []
 _tickers_signaled: set[str]    = set()
 _sector_counts:    dict[str,int] = {}   # correlation filter: trades per sector today
 _signaled_date:    str         = ""
-_momentum_longs:   list[str]   = []
-_momentum_shorts:  list[str]   = []
-_momentum_rank_date: str       = ""
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -160,17 +156,6 @@ def _earnings_too_close(ticker: str, block_days: int = EARNINGS_BLOCK_DAYS) -> b
     except Exception:
         return False
 
-
-def _get_momentum_ranked() -> tuple[list[str], list[str]]:
-    global _momentum_longs, _momentum_shorts, _momentum_rank_date
-    today = datetime.now(_ET).strftime("%Y-%m-%d")
-    if _momentum_rank_date == today and _momentum_longs:
-        return _momentum_longs, _momentum_shorts
-    from scanner import _STOCK_UNIVERSE
-    universe = list(dict.fromkeys(list(_USER_WATCHLIST) + _STOCK_UNIVERSE[:60]))
-    longs, shorts = rank_momentum(universe)
-    _momentum_longs, _momentum_shorts, _momentum_rank_date = longs, shorts, today
-    return longs, shorts
 
 
 # ── Core execute ──────────────────────────────────────────────────────────────
@@ -337,33 +322,6 @@ def run_orb_scan() -> None:
     logger.info("=== ORB done ===")
     gc.collect()
 
-
-def run_quant_scan() -> None:
-    if not is_market_open() or _mode() == "HALTED":
-        return
-    now_et = datetime.now(_ET)
-    mins   = now_et.hour * 60 + now_et.minute
-    if not (630 <= mins < 840):
-        return
-    logger.info("=== Quant scan ===")
-    longs, shorts = _get_momentum_ranked()
-    z_map         = batch_z_scores(list(dict.fromkeys(longs + shorts)))
-    if not z_map:
-        return
-    ranked = sorted(z_map, key=lambda t: abs(z_map[t]["z_score"]), reverse=True)
-    for ticker in ranked:
-        rank = longs.index(ticker)+1 if ticker in longs else (shorts.index(ticker)+1 if ticker in shorts else None)
-        sig  = generate_quant_signal(ticker, z_data=z_map[ticker], rank=rank)
-        if sig is None or sig.direction == "WAIT" or sig.confidence < MIN_CONFIDENCE:
-            continue
-        _execute_signal(
-            ticker=ticker, direction=sig.direction,
-            grade=sig.grade, confidence=sig.confidence,
-            entry=sig.entry, stop=sig.stop_loss, target=sig.target,
-            reasons=sig.reasons, signal_type="QUANT",
-        )
-    logger.info("=== Quant done ===")
-    gc.collect()
 
 
 def run_swing_scan() -> None:
@@ -579,12 +537,6 @@ def main() -> None:
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=f"11-{MARKET_CLOSE_HOUR}", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
-
-    # Quant: 10:30 AM – 2 PM every 30 min
-    sched.add_job(run_quant_scan, "cron", day_of_week="mon-fri",
-                  hour=10, minute=30, id="quant_1030")
-    sched.add_job(run_quant_scan, "cron", day_of_week="mon-fri",
-                  hour="11-13", minute="0,30", id="quant_mid")
 
     # Swing: 10:00 AM
     sched.add_job(run_swing_scan, "cron", day_of_week="mon-fri",
