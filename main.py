@@ -363,7 +363,7 @@ def run_fill_check() -> None:
     if not is_market_open():
         return
     try:
-        check_fills(send_fn=send_alert)
+        check_fills(send_fn=send_alert, signals_list=_signals_today)
     except Exception as e:
         logger.warning(f"Fill check error: {e}")
 

@@ -47,7 +47,7 @@ def _now_et() -> str:
     return datetime.now(_ET).strftime("%I:%M %p ET")
 
 
-def check_fills(send_fn) -> None:
+def check_fills(send_fn, signals_list=None) -> None:
     global _realized_pnl
 
     orders  = get_recent_orders(status="all", limit=150)
@@ -83,13 +83,23 @@ def check_fills(send_fn) -> None:
 
         if status == "filled":
             _alerted_orders.add(oid)
-            pnl = _handle_fill(order, send_fn)
+            pnl, actual_fill_px = _handle_fill(order, send_fn)
+
+            # Write actual fill price / realized P&L back to in-memory signals list
+            if signals_list is not None:
+                for sig in signals_list:
+                    if sig["ticker"] == order.symbol:
+                        if actual_fill_px > 0 and pnl is None:   # entry fill → update fill_px
+                            sig["fill_px"] = actual_fill_px
+                        if pnl is not None:                        # closing fill → accumulate pnl
+                            sig["pnl"] = sig.get("pnl", 0) + pnl
+                        break
+
             if pnl is not None:
                 _realized_pnl += pnl
                 _brain.update_daily_pnl(_realized_pnl)
 
                 # Record to brain if we have entry context
-                cid = str(order.client_order_id or "")
                 for entry_oid, ctx in list(_pending_entries.items()):
                     if ctx["ticker"] == order.symbol and pnl != 0:
                         result = "WIN" if pnl > 0 else ("LOSS" if pnl < -10 else "SCRATCH")
@@ -108,8 +118,8 @@ def check_fills(send_fn) -> None:
             _handle_cancel(order, send_fn)
 
 
-def _handle_fill(order, send_fn) -> float | None:
-    """Send WhatsApp fill alert; return realized P&L for closing legs (None for entries)."""
+def _handle_fill(order, send_fn) -> tuple[float | None, float]:
+    """Send fill alert; return (realized_pnl, fill_px). pnl is None for entry fills."""
     ticker  = order.symbol
     side    = str(order.side).upper()
     qty     = int(float(order.filled_qty))
@@ -159,7 +169,7 @@ def _handle_fill(order, send_fn) -> float | None:
 
     logger.info(f"Fill: {ticker} {side} {qty} @ {fill_px}  pnl={realized_pnl}")
     send_fn(msg)
-    return realized_pnl
+    return realized_pnl, fill_px
 
 
 def _handle_cancel(order, send_fn) -> None:
