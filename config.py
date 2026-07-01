@@ -109,6 +109,8 @@ NEWS_RSS_FEEDS = [
     "https://feeds.reuters.com/reuters/businessNews",
     "https://feeds.marketwatch.com/marketwatch/realtimeheadlines/",
     "https://finance.yahoo.com/rss/headline?s=SPY",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html",   # CNBC Top News
+    "https://www.cnbc.com/id/20409666/device/rss/rss.html",    # CNBC Markets
 ]
 TRUTH_SOCIAL_RSS = "https://truthsocial.com/@realDonaldTrump.rss"
 

@@ -13,9 +13,13 @@ Signal pipeline per trade:
   9. Time stop        (close flat positions after 90 min)
 """
 import gc
+import hashlib
 import logging
 import time
+import xml.etree.ElementTree as _ET_xml
 from datetime import datetime
+
+import requests
 
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -31,6 +35,7 @@ from config import (
     GRADE_A_ONLY_LABEL, AUTO_MAX_DAILY_LOSS,
     TIME_STOP_MINUTES, TREND_FILTER_ENABLED, CATALYST_HARD_SKIP_SCORE,
     CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS, MAX_SECTOR_SIGNALS,
+    NEWS_RSS_FEEDS, TRUMP_KEYWORDS, MARKET_EVENT_KEYWORDS,
 )
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
@@ -70,6 +75,7 @@ _tickers_signaled: set[str]    = set()
 _sector_counts:    dict[str,int] = {}   # correlation filter: trades per sector today
 _signaled_date:    str         = ""
 _target_ever_hit:  bool        = False  # True once day P&L >= DAILY_PROFIT_TARGET
+_news_alerted_ids: set[str]    = set()  # md5 hashes of headlines/posts already alerted
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -84,7 +90,7 @@ def is_market_open() -> bool:
 
 
 def _reset_daily_state() -> None:
-    global _signals_today, _tickers_signaled, _sector_counts, _signaled_date, _target_ever_hit
+    global _signals_today, _tickers_signaled, _sector_counts, _signaled_date, _target_ever_hit, _news_alerted_ids
     today = datetime.now(_ET).strftime("%Y-%m-%d")
     if today != _signaled_date:
         _signals_today    = []
@@ -92,6 +98,7 @@ def _reset_daily_state() -> None:
         _sector_counts    = {}
         _signaled_date    = today
         _target_ever_hit  = False
+        _news_alerted_ids = set()
         reset_daily_pnl()
 
 
@@ -545,6 +552,76 @@ def run_weekly_summary() -> None:
     logger.info(f"Weekly summary sent: {len(week_trades)} trades, P&L ${week_pnl:+,.0f}")
 
 
+def run_news_check() -> None:
+    """Every 30 min during market hours: check RSS + Truth Social for actionable news."""
+    global _news_alerted_ids
+    now = datetime.now(_ET)
+    if now.weekday() >= 5 or not (9 <= now.hour < 16):
+        return
+
+    alerts: list[str] = []
+
+    # ── Trump Truth Social: alert when specific stocks are named ─────────────
+    trump = get_trump_catalyst()
+    if trump["active"] and trump.get("mentioned_tickers"):
+        key = hashlib.md5(trump["summary"].encode()).hexdigest()
+        if key not in _news_alerted_ids:
+            _news_alerted_ids.add(key)
+            tickers = "  ".join(trump["mentioned_tickers"])
+            alerts.append(
+                f"TRUMP TRUTH SOCIAL\n\n"
+                f"STOCKS MENTIONED: {tickers}\n\n"
+                f"{trump['summary']}\n\n"
+                f"ACTION: Review for momentum — Trump mention = catalyst\n"
+                f"{now.strftime('%I:%M %p ET')}"
+            )
+
+    # ── RSS feeds: new Trump/macro headlines ─────────────────────────────────
+    trump_hits: list[str] = []
+    macro_hits: list[str] = []
+
+    for feed_url in NEWS_RSS_FEEDS:
+        try:
+            r = requests.get(feed_url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+            r.raise_for_status()
+            root = _ET_xml.fromstring(r.content)
+            for item in root.iter("item"):
+                title = (item.findtext("title") or "").strip()
+                if not title:
+                    continue
+                key = hashlib.md5(title.lower().encode()).hexdigest()
+                if key in _news_alerted_ids:
+                    continue
+                tl = title.lower()
+                if any(kw in tl for kw in TRUMP_KEYWORDS) and len(trump_hits) < 3:
+                    trump_hits.append(title)
+                    _news_alerted_ids.add(key)
+                elif any(kw in tl for kw in MARKET_EVENT_KEYWORDS) and len(macro_hits) < 3:
+                    macro_hits.append(title)
+                    _news_alerted_ids.add(key)
+        except Exception as exc:
+            logger.debug(f"RSS {feed_url}: {exc}")
+
+    if trump_hits or macro_hits:
+        lines = ["MARKET NEWS ALERT"]
+        if trump_hits:
+            lines += ["", "TRUMP / POLITICAL:"]
+            for h in trump_hits:
+                lines.append(f"  - {h[:100]}")
+        if macro_hits:
+            lines += ["", "MACRO / FED:"]
+            for h in macro_hits:
+                lines.append(f"  - {h[:100]}")
+        lines.append(f"\n{now.strftime('%I:%M %p ET')}")
+        alerts.append("\n".join(lines))
+
+    for msg in alerts:
+        send_alert(msg)
+
+    if alerts:
+        logger.info(f"News check: sent {len(alerts)} alert(s)")
+
+
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -579,6 +656,11 @@ def main() -> None:
     sched.add_job(run_brain_update, "cron", day_of_week="mon-fri",
                   hour=9, minute=25, id="brain_update")
 
+    # News + Truth Social check every 30 min during market hours
+    sched.add_job(run_news_check, "cron", day_of_week="mon-fri",
+                  hour="9-15", minute="0,30", id="news_check",
+                  misfire_grace_time=120)
+
     # Mid-day status
     sched.add_job(run_position_status, "cron", day_of_week="mon-fri",
                   hour=13, minute=0, id="midday")
@@ -597,7 +679,8 @@ def main() -> None:
         f"  Target  : ${DAILY_PROFIT_TARGET:,.0f}/day → Grade A only after\n"
         f"  Stops   : -${AUTO_MAX_DAILY_LOSS:,.0f} daily | time stop {TIME_STOP_MINUTES}min\n"
         "  Brain   : adaptive confidence + position size + weekly halt\n"
-        "  9:25 AM : regime + Trump + Congress briefing sent to WhatsApp"
+        "  9:25 AM : regime + Trump + Congress briefing sent to Telegram\n"
+        "  Every 30min: RSS news (Reuters/MarketWatch/CNBC) + Truth Social alerts"
     )
 
     if is_market_open():

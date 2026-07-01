@@ -57,6 +57,31 @@ _TRUMP_TARIFF_BEAR  = ["tariff","trade war","import tax","china tariff","mexico 
 _TRUMP_MARKET_BULL  = ["market is great","economy is booming","stock market","best economy",
                         "tremendous","beautiful numbers"]
 
+# Company name / keyword → ticker: used to detect specific stock mentions in Trump posts
+_TRUMP_STOCK_MENTIONS: dict[str, str] = {
+    "micron": "MU", "palantir": "PLTR", "nvidia": "NVDA", "apple": "AAPL",
+    "microsoft": "MSFT", "amazon": "AMZN", "google": "GOOGL", "alphabet": "GOOGL",
+    "meta": "META", "facebook": "META", "tesla": "TSLA", "spacex": "TSLA",
+    "intel": "INTC", "qualcomm": "QCOM", "broadcom": "AVGO",
+    "amd": "AMD", "arm": "ARM", "snowflake": "SNOW",
+    "boeing": "BA", "lockheed": "LMT", "raytheon": "RTX", "northrop": "NOC",
+    "exxon": "XOM", "chevron": "CVX", "halliburton": "HAL",
+    "jpmorgan": "JPM", "jp morgan": "JPM", "goldman": "GS",
+    "bank of america": "BAC", "citigroup": "C", "morgan stanley": "MS",
+    "coinbase": "COIN", "bitcoin": "COIN", "crypto": "COIN",
+    "pfizer": "PFE", "moderna": "MRNA", "united health": "UNH",
+    "walmart": "WMT", "costco": "COST",
+    "pltr": "PLTR", "mu": "MU", "nvda": "NVDA", "tsla": "TSLA",
+}
+
+def _extract_trump_tickers(text: str) -> list[str]:
+    tl = text.lower()
+    found: dict[str, bool] = {}
+    for name, ticker in _TRUMP_STOCK_MENTIONS.items():
+        if name in tl:
+            found[ticker] = True
+    return list(found.keys())
+
 # ── Caches ────────────────────────────────────────────────────────────────────
 _trump_cache: dict    = {"ts": None, "result": None}
 _congress_cache: dict = {"ts": None, "result": {}}
@@ -83,7 +108,8 @@ def get_trump_catalyst() -> dict:
         return _trump_cache["result"]
 
     result = {"active": False, "sentiment": "NEUTRAL",
-              "affected_sectors": [], "affected_tickers": [], "summary": ""}
+              "affected_sectors": [], "affected_tickers": [],
+              "mentioned_tickers": [], "summary": ""}
     try:
         feed = feedparser.parse("https://truthsocial.com/@realDonaldTrump.rss")
         cutoff = now - timedelta(hours=4)
@@ -131,6 +157,13 @@ def get_trump_catalyst() -> dict:
             result["active"] = True
             result["sentiment"] = "BULLISH"
             notes.append("Trump bullish on market")
+
+        # Detect specific stock/company mentions in the posts
+        mentioned = _extract_trump_tickers(text)
+        if mentioned:
+            result["active"] = True
+            result["mentioned_tickers"] = mentioned
+            notes.append(f"stocks mentioned: {', '.join(mentioned)}")
 
         result["summary"] = "Trump: " + " | ".join(notes) if notes else ""
         if result["active"]:
