@@ -27,7 +27,8 @@ from config import (
     MIN_PRICE, MIN_VOLUME, MIN_CONFIDENCE, INTERVAL_MINUTES,
     MAX_SWING_SIGNALS, AUTO_MIN_GRADE, AUTO_MIN_CONFIDENCE,
     AUTO_MAX_SIGNALS, FILL_CHECK_INTERVAL,
-    DAILY_PROFIT_TARGET, GRADE_A_ONLY_LABEL, AUTO_MAX_DAILY_LOSS,
+    DAILY_PROFIT_TARGET, PROFIT_PROTECT_DRAWDOWN,
+    GRADE_A_ONLY_LABEL, AUTO_MAX_DAILY_LOSS,
     TIME_STOP_MINUTES, TREND_FILTER_ENABLED, CATALYST_HARD_SKIP_SCORE,
     CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS, MAX_SECTOR_SIGNALS,
 )
@@ -68,6 +69,7 @@ _signals_today:    list[dict]  = []
 _tickers_signaled: set[str]    = set()
 _sector_counts:    dict[str,int] = {}   # correlation filter: trades per sector today
 _signaled_date:    str         = ""
+_target_ever_hit:  bool        = False  # True once day P&L >= DAILY_PROFIT_TARGET
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -82,13 +84,14 @@ def is_market_open() -> bool:
 
 
 def _reset_daily_state() -> None:
-    global _signals_today, _tickers_signaled, _sector_counts, _signaled_date
+    global _signals_today, _tickers_signaled, _sector_counts, _signaled_date, _target_ever_hit
     today = datetime.now(_ET).strftime("%Y-%m-%d")
     if today != _signaled_date:
         _signals_today    = []
         _tickers_signaled = set()
         _sector_counts    = {}
         _signaled_date    = today
+        _target_ever_hit  = False
         reset_daily_pnl()
 
 
@@ -103,15 +106,25 @@ def _mark_signaled(ticker: str, direction: str) -> None:
 
 
 def _mode() -> str:
-    pnl = get_daily_pnl()
-    # Also check Alpaca's real day P&L so Railway restarts can't bypass the halt
-    acct = get_account()
-    if acct:
-        pnl = min(pnl, acct.get("day_pnl", 0))
-    if pnl >= DAILY_PROFIT_TARGET:
-        return "A_ONLY"
-    if pnl <= -AUTO_MAX_DAILY_LOSS:
+    global _target_ever_hit
+    local_pnl  = get_daily_pnl()
+    acct       = get_account()
+    alpaca_pnl = acct.get("day_pnl", 0) if acct else 0
+    worst_pnl  = min(local_pnl, alpaca_pnl)   # conservative for halt
+    best_pnl   = max(local_pnl, alpaca_pnl)   # optimistic for profit target (survives restart)
+
+    if worst_pnl <= -AUTO_MAX_DAILY_LOSS:
         return "HALTED"
+
+    if best_pnl >= DAILY_PROFIT_TARGET:
+        _target_ever_hit = True
+
+    if _target_ever_hit and best_pnl <= DAILY_PROFIT_TARGET - PROFIT_PROTECT_DRAWDOWN:
+        return "HALTED"
+
+    if _target_ever_hit or best_pnl >= DAILY_PROFIT_TARGET:
+        return "A_ONLY"
+
     return "NORMAL"
 
 

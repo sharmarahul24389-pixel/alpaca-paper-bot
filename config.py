@@ -19,7 +19,9 @@ AUTO_MAX_DAILY_LOSS   = float(os.getenv("AUTO_MAX_DAILY_LOSS", "1000"))
 AUTO_MAX_SIGNALS      = int(os.getenv("AUTO_MAX_SIGNALS", "999"))
 
 # Daily profit target: after hitting this, only Grade A signals are taken
-DAILY_PROFIT_TARGET   = float(os.getenv("DAILY_PROFIT_TARGET", "500"))
+DAILY_PROFIT_TARGET      = float(os.getenv("DAILY_PROFIT_TARGET",      "1000"))
+# Profit protection: once target is hit, halt if P&L gives back this much
+PROFIT_PROTECT_DRAWDOWN  = float(os.getenv("PROFIT_PROTECT_DRAWDOWN",  "500"))
 GRADE_A_ONLY_LABEL    = "A"
 
 # Time-based stop: close flat positions after this many minutes (0 = disabled)
