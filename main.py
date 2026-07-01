@@ -128,8 +128,13 @@ def _mode() -> str:
     return "NORMAL"
 
 
+_BLOCKED_SIGNAL_TYPES: set[str] = {"QUANT"}  # hard-blocked; 6% WR, net money-loser
+
 def _can_trade(grade: str, confidence: int, signal_type: str) -> tuple[bool, str]:
     _reset_daily_state()
+
+    if signal_type.upper() in _BLOCKED_SIGNAL_TYPES:
+        return False, f"{signal_type} permanently disabled"
 
     # Weekly halt check
     w_mult = _brain.get_weekly_size_mult()
