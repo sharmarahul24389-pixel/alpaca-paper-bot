@@ -476,10 +476,16 @@ def run_position_status() -> None:
 
 def run_eod() -> None:
     logger.info("EOD cleanup")
-    cancel_all_orders()   # cancel pending bracket stops/targets first
-    time.sleep(3)         # let cancels settle before closing positions
-    close_all_positions() # close any remaining open positions (ORB second-halves, etc.)
+    cancel_all_orders()
     time.sleep(3)
+    close_all_positions()
+    time.sleep(15)   # wait for paper market closes to fill before running fill check
+    # Capture EOD closure fills so per-trade P&L is accurate in the summary
+    try:
+        check_fills(send_fn=send_alert, signals_list=_signals_today)
+    except Exception as e:
+        logger.warning(f"EOD fill capture failed: {e}")
+    time.sleep(2)
     acct = get_account()
     send_eod_summary(account=acct, trades_today=_signals_today)
     _brain.update_daily_pnl(get_daily_pnl())
