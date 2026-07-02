@@ -36,6 +36,7 @@ from config import (
     TIME_STOP_MINUTES, TREND_FILTER_ENABLED, CATALYST_HARD_SKIP_SCORE,
     CATALYST_GRADE_A_SCORE, EARNINGS_BLOCK_DAYS, MAX_SECTOR_SIGNALS,
     NEWS_RSS_FEEDS, TRUMP_KEYWORDS, MARKET_EVENT_KEYWORDS,
+    ACCOUNT_SIZE,
 )
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
@@ -256,7 +257,11 @@ def _execute_signal(
     cat_mult   = 1.15 if cat_score >= 2 else 1.0
     total_mult = brain_mult * week_mult * cat_mult
 
-    pos = calculate_position(entry, stop, grade)
+    # Use live equity so profits compound into larger position sizes
+    _acct = get_account()
+    live_equity = _acct.get("equity", ACCOUNT_SIZE) if _acct else ACCOUNT_SIZE
+
+    pos = calculate_position(entry, stop, grade, account_size=live_equity)
     if not pos:
         logger.warning(f"Position sizing failed: {ticker}")
         return
@@ -471,13 +476,12 @@ def run_position_status() -> None:
 
 def run_eod() -> None:
     logger.info("EOD cleanup")
-    cancel_all_orders()
-    time.sleep(2)
+    cancel_all_orders()   # cancel pending bracket stops/targets first
+    time.sleep(3)         # let cancels settle before closing positions
+    close_all_positions() # close any remaining open positions (ORB second-halves, etc.)
+    time.sleep(3)
     acct = get_account()
     send_eod_summary(account=acct, trades_today=_signals_today)
-    pos = get_positions_summary()
-    if "No open" not in pos:
-        send_alert(f"Open positions after close:\n{pos}")
     _brain.update_daily_pnl(get_daily_pnl())
     logger.info(f"EOD: day P&L ${acct.get('day_pnl',0):+,.0f}  week ${_brain.get_weekly_pnl():+,.0f}")
 
