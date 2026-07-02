@@ -7,7 +7,10 @@ from datetime import datetime
 
 import pytz
 
-from alpaca_trader import get_recent_orders, get_account, close_all_positions, get_open_positions
+from alpaca_trader import (
+    get_recent_orders, get_account, close_all_positions,
+    get_open_positions, move_stop_to_breakeven,
+)
 from config import AUTO_MAX_DAILY_LOSS, DAILY_PROFIT_TARGET, TIMEZONE
 import brain as _brain
 
@@ -128,46 +131,69 @@ def _handle_fill(order, send_fn) -> tuple[float | None, float]:
     cid     = str(order.client_order_id or "")
     oid     = str(order.id)
 
-    realized_pnl = None
-
+    # Our entry orders carry custom cids: "{ticker}_{dir}_{type}_scale-out" or "_close-all"
+    # Bracket child orders (stop-loss and take-profit) get auto-generated UUID cids.
     if "scale-out" in cid or "close-all" in cid:
-        # Closing leg — compute P&L against known entry
-        label = "+1R SCALE-OUT FILLED" if "scale-out" in cid else "+2R CLOSE-ALL FILLED"
-        emoji = "💰" if "scale-out" in cid else "✅"
-
-        # Look up entry price
-        for ctx in _pending_entries.values():
-            if ctx["ticker"] == ticker:
-                if ctx["direction"] == "BUY":
-                    realized_pnl = (fill_px - ctx["entry"]) * qty
-                else:
-                    realized_pnl = (ctx["entry"] - fill_px) * qty
-                break
-
-        pnl_str = f"\n  P&L: ${realized_pnl:+,.0f}" if realized_pnl is not None else ""
-        daily_str = f"\n  Day total: ${_realized_pnl + (realized_pnl or 0):+,.0f}"
-        target_note = ""
-        new_total = _realized_pnl + (realized_pnl or 0)
-        if new_total >= DAILY_PROFIT_TARGET:
-            target_note = "\n\n  TARGET HIT — Grade A signals only from now."
-
+        # This is an ENTRY fill — position is now open
+        leg = "1st half" if "scale-out" in cid else "2nd half"
         msg = (
-            f"{emoji} {label}\n\n"
-            f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}"
-            f"{pnl_str}{daily_str}{target_note}\n\n"
-            f"{now}"
-        )
-    else:
-        # Entry fill
-        label = "ENTRY FILLED"
-        msg = (
-            f"ENTRY FILLED\n\n"
+            f"ENTRY FILLED ({leg})\n\n"
             f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}\n"
             f"  Order: {oid[:8]}...\n\n"
             f"{now}"
         )
+        logger.info(f"Entry fill ({leg}): {ticker} {side} {qty} @ {fill_px}")
+        send_fn(msg)
+        return None, fill_px
 
-    logger.info(f"Fill: {ticker} {side} {qty} @ {fill_px}  pnl={realized_pnl}")
+    # UUID cid → bracket child (stop-loss or take-profit exit)
+    entry_ctx = None
+    for ctx in _pending_entries.values():
+        if ctx["ticker"] == ticker:
+            entry_ctx = ctx
+            break
+
+    if entry_ctx is None:
+        # No context (e.g. manual order) — generic alert
+        send_fn(f"FILL\n\n  {ticker}  {side}  {qty} @ ${fill_px:.2f}\n\n{now}")
+        return None, fill_px
+
+    direction = entry_ctx["direction"]
+    entry     = entry_ctx["entry"]
+
+    if direction == "BUY":
+        realized_pnl = (fill_px - entry) * qty
+        is_profit    = fill_px > entry * 1.001   # allow tiny slippage below entry
+    else:
+        realized_pnl = (entry - fill_px) * qty
+        is_profit    = fill_px < entry * 0.999
+
+    new_total = _realized_pnl + realized_pnl
+
+    if is_profit:
+        # Take-profit hit — move remaining half's stop to breakeven so it rides free
+        moved    = move_stop_to_breakeven(ticker, direction, entry)
+        be_note  = f"\n  Stop → breakeven ${entry:.2f} (remaining half rides free)" if moved else ""
+        tgt_note = "\n\n  DAILY TARGET HIT — Grade A only from now." if new_total >= DAILY_PROFIT_TARGET else ""
+
+        msg = (
+            f"PROFIT EXIT\n\n"
+            f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}\n"
+            f"  P&L: ${realized_pnl:+,.0f}  |  Day total: ${new_total:+,.0f}"
+            f"{be_note}{tgt_note}\n\n"
+            f"{now}"
+        )
+        logger.info(f"Profit exit: {ticker} {side} {qty} @ {fill_px}  pnl={realized_pnl:+.0f}  be_moved={moved}")
+    else:
+        # Stop-loss hit
+        msg = (
+            f"STOP HIT\n\n"
+            f"  {ticker}  {side}  {qty} shares @ ${fill_px:.2f}\n"
+            f"  P&L: ${realized_pnl:+,.0f}  |  Day total: ${new_total:+,.0f}\n\n"
+            f"{now}"
+        )
+        logger.info(f"Stop hit: {ticker} {side} {qty} @ {fill_px}  pnl={realized_pnl:+.0f}")
+
     send_fn(msg)
     return realized_pnl, fill_px
 
