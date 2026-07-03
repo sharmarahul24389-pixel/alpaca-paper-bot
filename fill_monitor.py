@@ -24,6 +24,8 @@ _halt_notified:  bool     = False   # prevents duplicate hard-loss alerts
 _realized_pnl: float = 0.0
 # Map order_id → (ticker, signal_type, grade, direction, entry_price, qty)
 _pending_entries: dict[str, dict] = {}
+# Prevent brain from double-recording a trade when both +1R and +2R legs close
+_brain_recorded: set[str] = set()   # "TICKER_DATE" keys
 
 
 def register_entry(order_id: str, ticker: str, signal_type: str,
@@ -44,6 +46,8 @@ def reset_daily_pnl():
     _realized_pnl   = 0.0
     _halt_notified  = False
     _alerted_orders.clear()
+    _pending_entries.clear()   # stale yesterday entries → wrong P&L if ticker re-trades
+    _brain_recorded.clear()    # fresh dedup set for new day
 
 
 def _now_et() -> str:
@@ -102,18 +106,23 @@ def check_fills(send_fn, signals_list=None) -> None:
                 _realized_pnl += pnl
                 _brain.update_daily_pnl(_realized_pnl)
 
-                # Record to brain if we have entry context
+                # Record to brain — once per ticker per day to prevent 2-leg winners
+                # from registering as two separate WIN records (inflates win rate).
+                from datetime import date as _date
                 for entry_oid, ctx in list(_pending_entries.items()):
                     if ctx["ticker"] == order.symbol and pnl != 0:
-                        result = "WIN" if pnl > 0 else ("LOSS" if pnl < -10 else "SCRATCH")
-                        _brain.record_trade(
-                            ticker=ctx["ticker"],
-                            signal_type=ctx["signal_type"],
-                            grade=ctx["grade"],
-                            direction=ctx["direction"],
-                            pnl=pnl,
-                            result=result,
-                        )
+                        brain_key = f"{ctx['ticker']}_{_date.today().isoformat()}"
+                        if brain_key not in _brain_recorded:
+                            result = "WIN" if pnl > 0 else ("LOSS" if pnl < -10 else "SCRATCH")
+                            _brain.record_trade(
+                                ticker=ctx["ticker"],
+                                signal_type=ctx["signal_type"],
+                                grade=ctx["grade"],
+                                direction=ctx["direction"],
+                                pnl=pnl,
+                                result=result,
+                            )
+                            _brain_recorded.add(brain_key)
                         break
 
         elif status in ("cancelled", "expired", "rejected"):
@@ -134,7 +143,10 @@ def _handle_fill(order, send_fn) -> tuple[float | None, float]:
     # Our entry orders carry custom cids: "{ticker}_{dir}_{type}_scale-out" or "_close-all"
     # Bracket child orders (stop-loss and take-profit) get auto-generated UUID cids.
     if "scale-out" in cid or "close-all" in cid:
-        # This is an ENTRY fill — position is now open
+        # This is an ENTRY fill — position is now open.
+        # Update stored entry price from signal price → actual fill price so P&L is accurate.
+        if oid in _pending_entries:
+            _pending_entries[oid]["entry"] = fill_px
         leg = "1st half" if "scale-out" in cid else "2nd half"
         msg = (
             f"ENTRY FILLED ({leg})\n\n"

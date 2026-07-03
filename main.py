@@ -661,7 +661,7 @@ def main() -> None:
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=9,  minute="30,35,40,45,50,55", id="orb_9")
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
-                  hour=10, minute="0,5,10,15,20,25,30",  id="orb_10")
+                  hour=10, minute="*/5",  id="orb_10")
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=f"11-{MARKET_CLOSE_HOUR}", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
