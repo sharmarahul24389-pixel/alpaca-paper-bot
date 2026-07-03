@@ -50,6 +50,7 @@ from alpaca_trader import (
     place_bracket_orders, get_account,
     cancel_all_orders, close_all_positions,
     close_position, move_stop_to_breakeven,
+    is_market_open,
 )
 from fill_monitor import (
     check_fills, get_positions_summary, get_daily_pnl,
@@ -80,15 +81,6 @@ _news_alerted_ids: set[str]    = set()  # md5 hashes of headlines/posts already 
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def is_market_open() -> bool:
-    now = datetime.now(_ET)
-    if now.weekday() >= 5:
-        return False
-    o = now.replace(hour=MARKET_OPEN_HOUR,  minute=MARKET_OPEN_MINUTE,  second=0, microsecond=0)
-    c = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MINUTE, second=0, microsecond=0)
-    return o <= now <= c
-
 
 def _reset_daily_state() -> None:
     global _signals_today, _tickers_signaled, _sector_counts, _signaled_date, _target_ever_hit, _news_alerted_ids

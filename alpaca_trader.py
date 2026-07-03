@@ -9,6 +9,7 @@ Both orders are native Alpaca bracket orders so stops/targets live at the
 broker — the bot does not need to manage them.
 """
 import logging
+import time
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
@@ -22,9 +23,26 @@ from config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER
 
 logger = logging.getLogger(__name__)
 
+_clock_cache: tuple[float, bool] = (0.0, False)
+
 
 def _client() -> TradingClient:
     return TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=ALPACA_PAPER)
+
+
+def is_market_open() -> bool:
+    """Use Alpaca's live clock — handles weekends AND holidays correctly."""
+    global _clock_cache
+    cached_ts, cached_val = _clock_cache
+    if time.time() - cached_ts < 60:   # cache for 60 seconds
+        return cached_val
+    try:
+        result = bool(_client().get_clock().is_open)
+        _clock_cache = (time.time(), result)
+        return result
+    except Exception as exc:
+        logger.warning(f"Market clock check failed: {exc}")
+        return cached_val   # return last known value on error
 
 
 def get_account() -> dict:
