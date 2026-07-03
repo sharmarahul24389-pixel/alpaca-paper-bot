@@ -471,7 +471,32 @@ def run_eod() -> None:
     cancel_all_orders()
     time.sleep(3)
     close_all_positions()
-    time.sleep(15)   # wait for paper market closes to fill before running fill check
+    time.sleep(15)   # wait for paper fills before verification
+
+    # Verify all positions are actually closed; retry stragglers individually
+    from alpaca_trader import get_open_positions
+    for attempt in range(3):
+        remaining = get_open_positions()
+        if not remaining:
+            break
+        syms = [p.symbol for p in remaining]
+        logger.warning(f"EOD verify attempt {attempt+1}: {len(remaining)} still open — {syms}")
+        for pos in remaining:
+            close_position(pos.symbol)
+        time.sleep(8)
+    else:
+        # After 3 attempts, still open — alert so user can manually close
+        still_open = get_open_positions()
+        if still_open:
+            syms = ", ".join(p.symbol for p in still_open)
+            msg  = (
+                f"EOD CLOSE FAILED — MANUAL ACTION REQUIRED\n\n"
+                f"Positions still open after 3 attempts:\n{syms}\n\n"
+                f"Please close manually on Alpaca dashboard."
+            )
+            logger.error(msg)
+            send_alert(msg)
+
     # Capture EOD closure fills so per-trade P&L is accurate in the summary
     try:
         check_fills(send_fn=send_alert, signals_list=_signals_today)
