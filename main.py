@@ -301,6 +301,9 @@ def _execute_signal(
             "opened_at":  datetime.now(_ET),   # for time-based stop
             "fill_px":    entry,               # signal price; updated to actual fill by fill_monitor
             "pnl":        0,
+            "reasons":    list(all_reasons),   # why the bot took this trade (for reel commentary)
+            "confidence": confidence,
+            "cat_score":  cat_score,
         })
         logger.info(
             f"Trade placed: {ticker} {direction} {grade} x{units} "

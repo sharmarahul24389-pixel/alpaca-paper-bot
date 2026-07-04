@@ -115,24 +115,30 @@ def _prepare_trades(signals_today: list) -> list:
 
     trades = []
     for sig in signals_today:
-        ticker = sig.get("ticker", "")
-        pnl    = sig.get("pnl", 0) or 0
+        ticker  = sig.get("ticker", "")
+        pnl     = sig.get("pnl", 0) or 0
         fill_px = sig.get("fill_px", 0) or 0
         if fill_px == 0:
             continue  # signal never filled
         ft = fill_times.get(ticker)
         if ft is None:
-            # Approximate: ORB trades cluster 10:00–10:30 AM
             now = datetime.now(_ET)
             ft  = now.replace(hour=10, minute=15, second=0, microsecond=0)
         trades.append({
-            "ticker":    ticker,
-            "direction": sig.get("direction", "BUY"),
-            "grade":     sig.get("grade", "B"),
-            "pnl":       pnl,
-            "fill_px":   fill_px,
-            "result":    "WIN" if pnl > 10 else ("LOSS" if pnl < -10 else "SCRATCH"),
-            "fill_time": ft,
+            "ticker":      ticker,
+            "direction":   sig.get("direction", "BUY"),
+            "grade":       sig.get("grade", "B"),
+            "pnl":         pnl,
+            "fill_px":     fill_px,
+            "stop":        sig.get("stop", 0),
+            "r1":          sig.get("r1", 0),
+            "r2":          sig.get("r2", 0),
+            "signal_type": sig.get("signal_type", "ORB"),
+            "reasons":     sig.get("reasons", []),
+            "confidence":  sig.get("confidence", 0),
+            "cat_score":   sig.get("cat_score", 0),
+            "result":      "WIN" if pnl > 10 else ("LOSS" if pnl < -10 else "SCRATCH"),
+            "fill_time":   ft,
         })
     trades.sort(key=lambda x: x["fill_time"])
     return trades
@@ -394,16 +400,48 @@ def scene_trade_card(trade: dict, bars) -> list:
         if price_range < 0.01:
             price_range = fill_px * 0.02
 
-        # Mark entry price line
-        ax_c.axhline(fill_px, color=GOLD, linewidth=1.5,
-                     linestyle="--", alpha=0.9, zorder=5)
-        ax_c.text(len(opens) - 0.5, fill_px,
-                  f"  Entry ${fill_px:.2f}", va="center",
-                  color=GOLD, fontsize=8.5)
+        stop = trade.get("stop", 0)
+        r1   = trade.get("r1", 0)
+        r2   = trade.get("r2", 0)
 
-        ax_c.set_xlim(-1, len(opens) + 1)
-        ax_c.set_ylim(lows.min() - price_range * 0.15,
-                      highs.max() + price_range * 0.15)
+        # Dynamic y-range that includes all key levels
+        all_levels = [lows.min(), highs.max()]
+        for lvl in [stop, r1, r2, fill_px]:
+            if lvl and lvl > 0:
+                all_levels.append(lvl)
+        y_lo = min(all_levels)
+        y_hi = max(all_levels)
+        y_pad = (y_hi - y_lo) * 0.18 or fill_px * 0.02
+
+        # Entry line (gold dashed)
+        ax_c.axhline(fill_px, color=GOLD, linewidth=1.6,
+                     linestyle="--", alpha=0.95, zorder=5)
+        ax_c.text(len(opens) + 0.3, fill_px, f"ENTRY ${fill_px:.2f}",
+                  va="center", color=GOLD, fontsize=8, fontweight="bold")
+
+        # Stop loss line (red)
+        if stop and stop > 0:
+            ax_c.axhline(stop, color=RED, linewidth=1.4,
+                         linestyle=":", alpha=0.9, zorder=5)
+            ax_c.text(len(opens) + 0.3, stop, f"STOP ${stop:.2f}",
+                      va="center", color=RED, fontsize=7.5)
+
+        # Target 1 line (light green)
+        if r1 and r1 > 0:
+            ax_c.axhline(r1, color="#86efac", linewidth=1.4,
+                         linestyle="-.", alpha=0.9, zorder=5)
+            ax_c.text(len(opens) + 0.3, r1, f"T1 ${r1:.2f}",
+                      va="center", color="#86efac", fontsize=7.5)
+
+        # Target 2 line (bright green)
+        if r2 and r2 > 0:
+            ax_c.axhline(r2, color=GREEN, linewidth=1.6,
+                         linestyle="-", alpha=0.9, zorder=5)
+            ax_c.text(len(opens) + 0.3, r2, f"T2 ${r2:.2f}",
+                      va="center", color=GREEN, fontsize=7.5, fontweight="bold")
+
+        ax_c.set_xlim(-1, len(opens) + 5)
+        ax_c.set_ylim(y_lo - y_pad, y_hi + y_pad)
 
     else:
         # No chart data — show placeholder text
@@ -633,87 +671,146 @@ def _build_commentary(trades: list, day_pnl: float, account_val: float,
 
     # ── Intro ──────────────────────────────────────────────────────────────────
     parts.append(
-        f"Alpaca Paper Bot, {today_str}. Here is your full daily trading recap."
+        f"Alpaca Paper Bot — {today_str}. Here is your full daily trading recap."
     )
 
     if n == 0:
         parts.append(
             "No trades today. The market either closed early or conditions "
             "did not meet the bot's entry filters. The bot stays disciplined "
-            "and waits for high-probability setups."
+            "and only acts on high-probability setups."
         )
     else:
         parts.append(
-            f"The bot ran {n} trade{'s' if n > 1 else ''} today and "
-            f"finished the session {pnl_word}. Let's walk through the action."
+            f"The bot placed {n} trade{'s' if n > 1 else ''} today and "
+            f"finished the session {pnl_word}. Let me walk you through every trade — "
+            f"why we took it, how we managed the risk, and what happened."
         )
 
     # ── P&L curve narration ────────────────────────────────────────────────────
     if n > 0:
-        best    = max(trades, key=lambda t: t["pnl"])
-        worst   = min(trades, key=lambda t: t["pnl"])
-        b_dir   = "long" if best["direction"] == "BUY" else "short"
-        w_dir   = "long" if worst["direction"] == "BUY" else "short"
-
+        best  = max(trades, key=lambda t: t["pnl"])
+        worst = min(trades, key=lambda t: t["pnl"])
         parts.append(
-            f"Here you can see the day's profit and loss building up in real time. "
-            f"The best trade of the day was {best['ticker']}, going {b_dir}, "
-            f"which returned ${best['pnl']:,.0f}."
+            f"This chart shows the cumulative P&L building through the session. "
+            f"{'Green' if day_pnl >= 0 else 'Red'} means we finished "
+            f"{'above' if day_pnl >= 0 else 'below'} zero. "
+            f"The best performer was {best['ticker']} at plus ${best['pnl']:,.0f}."
         )
         if n > 1 and worst["pnl"] < -10:
             parts.append(
-                f"The toughest trade was {worst['ticker']}, going {w_dir}, "
-                f"which cost ${abs(worst['pnl']):,.0f}. "
-                f"Risk management kept the loss controlled."
+                f"The toughest trade was {worst['ticker']}, costing ${abs(worst['pnl']):,.0f}. "
+                f"The stop was hit cleanly — that is the risk management doing its job."
             )
 
-    # ── Per-trade narration ────────────────────────────────────────────────────
-    for t in trades[:3]:
-        ticker    = t["ticker"]
-        direction = "long" if t["direction"] == "BUY" else "short"
-        grade     = t["grade"]
-        fill_px   = t["fill_px"]
-        pnl       = t["pnl"]
-        result    = t["result"]
+    # ── Per-trade full narration ───────────────────────────────────────────────
+    for i, t in enumerate(trades[:3]):
+        ticker      = t["ticker"]
+        direction   = "BUY" if t["direction"] == "BUY" else "SELL"
+        dir_word    = "long" if direction == "BUY" else "short"
+        grade       = t["grade"]
+        fill_px     = t["fill_px"]
+        stop        = t.get("stop", 0)
+        r1          = t.get("r1", 0)
+        r2          = t.get("r2", 0)
+        pnl         = t["pnl"]
+        result      = t["result"]
+        signal_type = t.get("signal_type", "ORB")
+        reasons     = t.get("reasons", [])
+        confidence  = t.get("confidence", 0)
+        cat_score   = t.get("cat_score", 0)
 
+        trade_num = ["First", "Second", "Third"][i]
+
+        # Grade description
         grade_desc = {
-            "A": "Grade A, our highest-conviction setup with full position size",
-            "B": "Grade B, a solid setup at three-quarter size",
-            "C": "Grade C, a smaller position with a tighter risk target",
-        }.get(grade, f"Grade {grade}")
+            "A": "Grade A — our highest-conviction setup. Full position size, all four criteria confirmed.",
+            "B": "Grade B — solid setup, three of four criteria met. Three-quarter position size.",
+            "C": "Grade C — valid breakout but fewer confirmations. Half position size with tighter targets.",
+        }.get(grade, f"Grade {grade}.")
 
+        # WHY we took it
+        why_parts = []
+        if reasons:
+            # Clean up reason strings for speech
+            clean = []
+            for r in reasons[:4]:
+                r = str(r).replace("✅", "").replace("🔴", "").replace("🟢", "")
+                r = r.replace("  ", " ").strip()
+                if r:
+                    clean.append(r)
+            if clean:
+                why_parts.append("The reasons for entering: " + ". ".join(clean) + ".")
+        if confidence:
+            why_parts.append(f"Signal confidence was {confidence} percent.")
+        if cat_score and cat_score != 0:
+            cat_desc = "positive" if cat_score > 0 else "slightly negative but within tolerance"
+            why_parts.append(f"Catalyst score was {cat_score:+d}, {cat_desc}.")
+
+        # Entry / risk levels
+        risk_per_share = abs(fill_px - stop) if stop else 0
+        r1_pct = abs(r1 - fill_px) / fill_px * 100 if r1 and fill_px else 0
+        r2_pct = abs(r2 - fill_px) / fill_px * 100 if r2 and fill_px else 0
+
+        level_parts = [f"Entry at ${fill_px:.2f}."]
+        if stop:
+            level_parts.append(f"Stop loss at ${stop:.2f}, risking ${risk_per_share:.2f} per share.")
+        if r1:
+            level_parts.append(f"First target at ${r1:.2f} — that is plus {r1_pct:.1f} percent.")
+        if r2:
+            level_parts.append(f"Second target at ${r2:.2f} — that is plus {r2_pct:.1f} percent.")
+        level_parts.append("The bot uses a two-leg bracket: half exits at target one, half rides to target two.")
+
+        # Outcome
         if result == "WIN":
-            outcome = f"a winning trade, up ${pnl:,.0f}"
+            if pnl > 500:
+                outcome = f"This was a strong winner — the trade returned ${pnl:,.0f}. Both legs hit target."
+            else:
+                outcome = f"A winner. The trade returned ${pnl:,.0f}. Target hit, bot booked the gain."
         elif result == "LOSS":
-            outcome = f"a controlled loss of ${abs(pnl):,.0f}, stopped out cleanly"
+            outcome = (
+                f"The stop was hit. Trade closed for a loss of ${abs(pnl):,.0f}. "
+                f"Loss was pre-defined — this is part of the strategy. "
+                f"One loss does not change the overall edge."
+            )
         else:
-            outcome = f"a scratch, essentially breakeven at ${pnl:+,.0f}"
+            outcome = (
+                f"This one was a scratch — essentially breakeven at ${pnl:+,.0f}. "
+                f"The time-based stop likely closed it before either target was reached."
+            )
 
+        # Assemble trade narration
         parts.append(
-            f"Next up: {ticker}. {grade_desc}. "
-            f"The bot entered {direction} at ${fill_px:.2f}. "
-            f"This trade ended as {outcome}."
+            f"{trade_num} trade — {ticker}, {signal_type} {dir_word} signal. {grade_desc}"
         )
+        if why_parts:
+            parts.append(" ".join(why_parts))
+        parts.append(" ".join(level_parts))
+        parts.append(f"Outcome: {outcome}")
 
     # ── Scorecard narration ────────────────────────────────────────────────────
     if n > 0:
-        streak = "solid" if wr >= 60 else ("mixed" if wr >= 40 else "tough")
+        qual = "excellent" if wr >= 70 else ("solid" if wr >= 55 else ("mixed" if wr >= 40 else "tough"))
         parts.append(
-            f"And that brings us to the final scorecard for {day_name}. "
+            f"Now for the final scorecard on {day_name}. "
             f"Total P&L: {pnl_word}. "
-            f"{n} trade{'s' if n != 1 else ''}, "
+            f"{n} trade{'s' if n != 1 else ''} placed — "
             f"{n_wins} winner{'s' if n_wins != 1 else ''}, "
             f"{n_losses} loss{'es' if n_losses != 1 else ''}. "
-            f"A {streak} win rate of {wr} percent. "
-            f"The paper account now sits at ${account_val:,.0f}."
+            f"A {qual} win rate of {wr} percent. "
+            f"The paper account now stands at ${account_val:,.0f}."
         )
     else:
-        parts.append(f"Final check for {day_name}. No trades, account unchanged at ${account_val:,.0f}.")
+        parts.append(
+            f"Final check for {day_name}. No trades taken today. "
+            f"Account unchanged at ${account_val:,.0f}."
+        )
 
     parts.append(
-        "This is a fully automated paper trading bot running on real market data "
-        "through Alpaca Markets. Paper trading only — not financial advice. "
-        "Follow along as we track week-by-week performance. See you tomorrow."
+        "This is a fully automated paper trading system running live on Alpaca Markets. "
+        "Every trade is paper only — no real money at risk. "
+        "We are tracking week-by-week performance transparently. "
+        "This is not financial advice. See you tomorrow."
     )
 
     return "  ".join(parts)
