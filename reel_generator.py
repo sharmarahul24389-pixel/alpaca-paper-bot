@@ -5,13 +5,17 @@ Generates a 1080×1080 MP4 (~30 sec) showing:
   • Animated P&L curve for the day
   • Top-3 trade cards with stock chart + entry/exit markings
   • Final scorecard
+  • Full voice commentary via Microsoft Edge TTS
 
 Saves to Desktop/Trading_Reels/YYYY-MM-DD.mp4  AND sends via Telegram.
 Called from run_eod() in main.py after send_eod_summary().
 """
+import asyncio
 import io
 import logging
 import os
+import subprocess
+import tempfile
 from datetime import datetime, date
 
 import numpy as np
@@ -607,6 +611,158 @@ def _send_telegram_video(filepath: str, caption: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# COMMENTARY + AUDIO
+# ══════════════════════════════════════════════════════════════════════════════
+
+VOICE = "en-US-EricNeural"   # professional, clear — good for finance content
+
+
+def _build_commentary(trades: list, day_pnl: float, account_val: float,
+                      today_str: str) -> str:
+    """Dynamically build the full voiceover script for the day's reel."""
+    n        = len(trades)
+    n_wins   = sum(1 for t in trades if t["result"] == "WIN")
+    n_losses = sum(1 for t in trades if t["result"] == "LOSS")
+    wr       = int(n_wins / n * 100) if n else 0
+    day_name = datetime.now(_ET).strftime("%A")
+    pnl_up   = day_pnl >= 0
+    pnl_abs  = abs(day_pnl)
+    pnl_word = f"up ${pnl_abs:,.0f}" if pnl_up else f"down ${pnl_abs:,.0f}"
+
+    parts = []
+
+    # ── Intro ──────────────────────────────────────────────────────────────────
+    parts.append(
+        f"Alpaca Paper Bot, {today_str}. Here is your full daily trading recap."
+    )
+
+    if n == 0:
+        parts.append(
+            "No trades today. The market either closed early or conditions "
+            "did not meet the bot's entry filters. The bot stays disciplined "
+            "and waits for high-probability setups."
+        )
+    else:
+        parts.append(
+            f"The bot ran {n} trade{'s' if n > 1 else ''} today and "
+            f"finished the session {pnl_word}. Let's walk through the action."
+        )
+
+    # ── P&L curve narration ────────────────────────────────────────────────────
+    if n > 0:
+        best    = max(trades, key=lambda t: t["pnl"])
+        worst   = min(trades, key=lambda t: t["pnl"])
+        b_dir   = "long" if best["direction"] == "BUY" else "short"
+        w_dir   = "long" if worst["direction"] == "BUY" else "short"
+
+        parts.append(
+            f"Here you can see the day's profit and loss building up in real time. "
+            f"The best trade of the day was {best['ticker']}, going {b_dir}, "
+            f"which returned ${best['pnl']:,.0f}."
+        )
+        if n > 1 and worst["pnl"] < -10:
+            parts.append(
+                f"The toughest trade was {worst['ticker']}, going {w_dir}, "
+                f"which cost ${abs(worst['pnl']):,.0f}. "
+                f"Risk management kept the loss controlled."
+            )
+
+    # ── Per-trade narration ────────────────────────────────────────────────────
+    for t in trades[:3]:
+        ticker    = t["ticker"]
+        direction = "long" if t["direction"] == "BUY" else "short"
+        grade     = t["grade"]
+        fill_px   = t["fill_px"]
+        pnl       = t["pnl"]
+        result    = t["result"]
+
+        grade_desc = {
+            "A": "Grade A, our highest-conviction setup with full position size",
+            "B": "Grade B, a solid setup at three-quarter size",
+            "C": "Grade C, a smaller position with a tighter risk target",
+        }.get(grade, f"Grade {grade}")
+
+        if result == "WIN":
+            outcome = f"a winning trade, up ${pnl:,.0f}"
+        elif result == "LOSS":
+            outcome = f"a controlled loss of ${abs(pnl):,.0f}, stopped out cleanly"
+        else:
+            outcome = f"a scratch, essentially breakeven at ${pnl:+,.0f}"
+
+        parts.append(
+            f"Next up: {ticker}. {grade_desc}. "
+            f"The bot entered {direction} at ${fill_px:.2f}. "
+            f"This trade ended as {outcome}."
+        )
+
+    # ── Scorecard narration ────────────────────────────────────────────────────
+    if n > 0:
+        streak = "solid" if wr >= 60 else ("mixed" if wr >= 40 else "tough")
+        parts.append(
+            f"And that brings us to the final scorecard for {day_name}. "
+            f"Total P&L: {pnl_word}. "
+            f"{n} trade{'s' if n != 1 else ''}, "
+            f"{n_wins} winner{'s' if n_wins != 1 else ''}, "
+            f"{n_losses} loss{'es' if n_losses != 1 else ''}. "
+            f"A {streak} win rate of {wr} percent. "
+            f"The paper account now sits at ${account_val:,.0f}."
+        )
+    else:
+        parts.append(f"Final check for {day_name}. No trades, account unchanged at ${account_val:,.0f}.")
+
+    parts.append(
+        "This is a fully automated paper trading bot running on real market data "
+        "through Alpaca Markets. Paper trading only — not financial advice. "
+        "Follow along as we track week-by-week performance. See you tomorrow."
+    )
+
+    return "  ".join(parts)
+
+
+def _ffmpeg_exe() -> str:
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+async def _tts_async(text: str, voice: str, out_path: str) -> None:
+    import edge_tts
+    await edge_tts.Communicate(text, voice).save(out_path)
+
+
+def _generate_tts(text: str, out_path: str, voice: str = VOICE) -> None:
+    """Generate MP3 voiceover using Microsoft Edge TTS (free, no API key)."""
+    asyncio.run(_tts_async(text, voice, out_path))
+    logger.info(f"TTS audio generated: {out_path}")
+
+
+def _merge_audio_video(video_path: str, audio_path: str,
+                       output_path: str, video_dur: float) -> None:
+    """
+    Combine silent video + TTS audio into final MP4.
+    Audio is padded with silence if shorter than the video.
+    """
+    ffmpeg = _ffmpeg_exe()
+    cmd = [
+        ffmpeg, "-y",
+        "-i", video_path,
+        "-i", audio_path,
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "128k",
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        # Pad audio with silence so video never gets cut short
+        "-af", f"apad=whole_dur={video_dur:.3f}",
+        "-t", str(video_dur),
+        output_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"ffmpeg merge failed: {result.stderr[-500:]}")
+        raise RuntimeError("ffmpeg audio merge failed")
+    logger.info(f"Final reel with audio: {output_path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -643,14 +799,33 @@ def generate_reel(signals_today: list, account: dict) -> None:
         # Scene 4 — scorecard (7.5 s)
         frames += scene_scorecard(trades, day_pnl, account_val, today_str)
 
-        # Save MP4
+        # Write silent video to temp file
+        tmp      = tempfile.gettempdir()
+        silent   = os.path.join(tmp, f"reel_silent_{date_str}.mp4")
+        audio_mp3= os.path.join(tmp, f"reel_audio_{date_str}.mp3")
+        video_dur= len(frames) / FPS
+
+        _write_mp4(frames, silent)
+
+        # Generate commentary audio
+        logger.info("Reel: generating commentary audio...")
+        commentary = _build_commentary(trades, day_pnl, account_val, today_str)
+        logger.info(f"Commentary ({len(commentary)} chars):\n{commentary[:200]}...")
+        _generate_tts(commentary, audio_mp3)
+
+        # Merge audio onto video → final file
         folder      = _get_output_folder()
         output_path = os.path.join(folder, f"{date_str}.mp4")
-        _write_mp4(frames, output_path)
+        _merge_audio_video(silent, audio_mp3, output_path, video_dur)
+
+        # Cleanup temp files
+        for f in [silent, audio_mp3]:
+            try: os.remove(f)
+            except Exception: pass
 
         # Send via Telegram
         pnl_str = f"+${day_pnl:,.0f}" if day_pnl >= 0 else f"-${abs(day_pnl):,.0f}"
-        caption = (f"📈 Alpaca Paper Bot — {today_str}\n"
+        caption = (f"Alpaca Paper Bot - {today_str}\n"
                    f"Day P&L: {pnl_str}  |  {len(trades)} trades\n"
                    f"Account: ${account_val:,.0f}")
         _send_telegram_video(output_path, caption)
