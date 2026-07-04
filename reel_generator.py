@@ -832,11 +832,28 @@ def _generate_tts(text: str, out_path: str, voice: str = VOICE) -> None:
     logger.info(f"TTS audio generated: {out_path}")
 
 
-def _merge_audio_video(video_path: str, audio_path: str,
-                       output_path: str, video_dur: float) -> None:
+def _get_audio_duration(audio_path: str) -> float:
+    """Return audio file duration in seconds via ffmpeg."""
+    ffmpeg = _ffmpeg_exe()
+    result = subprocess.run(
+        [ffmpeg, "-i", audio_path, "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    for line in (result.stdout + result.stderr).split("\n"):
+        if "Duration:" in line:
+            try:
+                dur_str = line.split("Duration:")[1].split(",")[0].strip()
+                h, m, s = dur_str.split(":")
+                return float(h) * 3600 + float(m) * 60 + float(s)
+            except Exception:
+                continue
+    return 30.0  # safe fallback
+
+
+def _merge_audio_video(video_path: str, audio_path: str, output_path: str) -> None:
     """
-    Combine silent video + TTS audio into final MP4.
-    Audio is padded with silence if shorter than the video.
+    Combine video + audio into final MP4.
+    Video must already be long enough to cover the audio — no trimming here.
     """
     ffmpeg = _ffmpeg_exe()
     cmd = [
@@ -847,9 +864,7 @@ def _merge_audio_video(video_path: str, audio_path: str,
         "-c:a", "aac", "-b:a", "128k",
         "-map", "0:v:0",
         "-map", "1:a:0",
-        # Pad audio with silence so video never gets cut short
-        "-af", f"apad=whole_dur={video_dur:.3f}",
-        "-t", str(video_dur),
+        "-shortest",        # trim to the shorter stream (video >= audio after extension)
         output_path,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -875,45 +890,52 @@ def generate_reel(signals_today: list, account: dict) -> None:
         day_pnl     = account.get("day_pnl", 0) or 0
         account_val = float(account.get("equity", 100_000) or 100_000)
 
-        logger.info("Reel: preparing trade data…")
+        logger.info("Reel: preparing trade data...")
         trades = _prepare_trades(signals_today)
 
-        # Build all frames
-        logger.info("Reel: rendering frames…")
-        frames = []
+        tmp       = tempfile.gettempdir()
+        silent    = os.path.join(tmp, f"reel_silent_{date_str}.mp4")
+        audio_mp3 = os.path.join(tmp, f"reel_audio_{date_str}.mp3")
 
-        # Scene 1 — intro (2.5 s)
-        frames += scene_intro(today_str, day_pnl, len(trades))
-
-        # Scene 2 — P&L curve (8.75 s)
-        frames += scene_pnl_curve(trades, day_pnl)
-
-        # Scene 3 — trade cards (max 3, 4 s each)
-        for trade in trades[:3]:
-            bars = _get_bars(trade["ticker"])
-            frames += scene_trade_card(trade, bars)
-
-        # Scene 4 — scorecard (7.5 s)
-        frames += scene_scorecard(trades, day_pnl, account_val, today_str)
-
-        # Write silent video to temp file
-        tmp      = tempfile.gettempdir()
-        silent   = os.path.join(tmp, f"reel_silent_{date_str}.mp4")
-        audio_mp3= os.path.join(tmp, f"reel_audio_{date_str}.mp3")
-        video_dur= len(frames) / FPS
-
-        _write_mp4(frames, silent)
-
-        # Generate commentary audio
+        # ── Step 1: generate TTS audio FIRST so we know how long the video must be
         logger.info("Reel: generating commentary audio...")
         commentary = _build_commentary(trades, day_pnl, account_val, today_str)
-        logger.info(f"Commentary ({len(commentary)} chars):\n{commentary[:200]}...")
+        logger.info(f"Commentary ({len(commentary)} chars)")
         _generate_tts(commentary, audio_mp3)
+        audio_dur = _get_audio_duration(audio_mp3)
+        logger.info(f"Audio duration: {audio_dur:.1f}s")
 
-        # Merge audio onto video → final file
+        # ── Step 2: render scenes
+        logger.info("Reel: rendering frames...")
+        frames = []
+
+        frames += scene_intro(today_str, day_pnl, len(trades))       # 2.5 s
+        frames += scene_pnl_curve(trades, day_pnl)                    # 8.75 s
+
+        bars_cache = {}
+        for trade in trades[:3]:
+            bars_cache[trade["ticker"]] = _get_bars(trade["ticker"])
+            frames += scene_trade_card(trade, bars_cache[trade["ticker"]])  # 4.2 s each
+
+        scorecard_frames = scene_scorecard(trades, day_pnl, account_val, today_str)
+        frames += scorecard_frames
+
+        # ── Step 3: extend video so it covers the full audio duration
+        video_dur = len(frames) / FPS
+        if audio_dur > video_dur:
+            extra = int((audio_dur - video_dur + 1.5) * FPS)  # 1.5 s tail of silence
+            logger.info(f"Extending video by {extra/FPS:.1f}s to cover audio")
+            frames += [scorecard_frames[-1]] * extra  # hold last scorecard frame
+
+        video_dur = len(frames) / FPS
+        logger.info(f"Final video: {video_dur:.1f}s  audio: {audio_dur:.1f}s")
+
+        # ── Step 4: write silent video, merge with audio
+        _write_mp4(frames, silent)
+
         folder      = _get_output_folder()
         output_path = os.path.join(folder, f"{date_str}.mp4")
-        _merge_audio_video(silent, audio_mp3, output_path, video_dur)
+        _merge_audio_video(silent, audio_mp3, output_path)
 
         # Cleanup temp files
         for f in [silent, audio_mp3]:
