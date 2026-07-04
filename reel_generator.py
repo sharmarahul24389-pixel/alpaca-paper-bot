@@ -77,6 +77,12 @@ def _hold(frame: np.ndarray, n: int) -> list:
     return [frame] * n
 
 
+def _flash(n: int = 3) -> list:
+    """Quick white flash between scenes for visual punch."""
+    white = np.full((PX, PX, 3), 255, dtype=np.uint8)
+    return [white] * n
+
+
 def _fade(frame_a: np.ndarray, frame_b: np.ndarray, n: int) -> list:
     """Linear cross-fade between two frames over n steps."""
     frames = []
@@ -241,7 +247,7 @@ def scene_pnl_curve(trades: list, day_pnl: float) -> list:
     y_abs_max = max(abs(min(ys)), abs(max(ys)), 100)
     y_pad     = y_abs_max * 0.3
 
-    total_frames = 210
+    total_frames = 120  # snappier animation — 5s instead of 8.75s
     n_pts = len(xs)
     frames = []
 
@@ -652,168 +658,100 @@ def _send_telegram_video(filepath: str, caption: str) -> None:
 # COMMENTARY + AUDIO
 # ══════════════════════════════════════════════════════════════════════════════
 
-VOICE = "en-US-EricNeural"   # professional, clear — good for finance content
+VOICE      = "en-US-ChristopherNeural"  # warm, engaging delivery
+VOICE_RATE = "+20%"                     # 20% faster — snappier for short-form content
 
 
 def _build_commentary(trades: list, day_pnl: float, account_val: float,
                       today_str: str) -> str:
-    """Dynamically build the full voiceover script for the day's reel."""
+    """Punchy, short-form voiceover script — targets ~45-60 seconds total."""
     n        = len(trades)
     n_wins   = sum(1 for t in trades if t["result"] == "WIN")
     n_losses = sum(1 for t in trades if t["result"] == "LOSS")
     wr       = int(n_wins / n * 100) if n else 0
-    day_name = datetime.now(_ET).strftime("%A")
     pnl_up   = day_pnl >= 0
     pnl_abs  = abs(day_pnl)
-    pnl_word = f"up ${pnl_abs:,.0f}" if pnl_up else f"down ${pnl_abs:,.0f}"
+    up_down  = "up" if pnl_up else "down"
 
     parts = []
 
-    # ── Intro ──────────────────────────────────────────────────────────────────
-    parts.append(
-        f"Alpaca Paper Bot — {today_str}. Here is your full daily trading recap."
-    )
-
+    # ── Intro — 2 punchy lines ─────────────────────────────────────────────────
+    parts.append(f"Paper bot recap. {today_str}.")
     if n == 0:
-        parts.append(
-            "No trades today. The market either closed early or conditions "
-            "did not meet the bot's entry filters. The bot stays disciplined "
-            "and only acts on high-probability setups."
-        )
+        parts.append("No trades today. Conditions didn't meet our filters. Bot stays patient.")
     else:
         parts.append(
-            f"The bot placed {n} trade{'s' if n > 1 else ''} today and "
-            f"finished the session {pnl_word}. Let me walk you through every trade — "
-            f"why we took it, how we managed the risk, and what happened."
+            f"{n} trade{'s' if n != 1 else ''} today. "
+            f"Finished {up_down} ${pnl_abs:,.0f}. Let's break it down."
         )
 
-    # ── P&L curve narration ────────────────────────────────────────────────────
+    # ── P&L curve — one line ───────────────────────────────────────────────────
     if n > 0:
-        best  = max(trades, key=lambda t: t["pnl"])
-        worst = min(trades, key=lambda t: t["pnl"])
+        best = max(trades, key=lambda t: t["pnl"])
         parts.append(
-            f"This chart shows the cumulative P&L building through the session. "
-            f"{'Green' if day_pnl >= 0 else 'Red'} means we finished "
-            f"{'above' if day_pnl >= 0 else 'below'} zero. "
-            f"The best performer was {best['ticker']} at plus ${best['pnl']:,.0f}."
+            f"Here's the P&L building through the session. "
+            f"Best trade: {best['ticker']}, plus ${best['pnl']:,.0f}."
         )
-        if n > 1 and worst["pnl"] < -10:
-            parts.append(
-                f"The toughest trade was {worst['ticker']}, costing ${abs(worst['pnl']):,.0f}. "
-                f"The stop was hit cleanly — that is the risk management doing its job."
-            )
 
-    # ── Per-trade full narration ───────────────────────────────────────────────
+    # ── Per-trade — tight 3-part structure ────────────────────────────────────
     for i, t in enumerate(trades[:3]):
-        ticker      = t["ticker"]
-        direction   = "BUY" if t["direction"] == "BUY" else "SELL"
-        dir_word    = "long" if direction == "BUY" else "short"
-        grade       = t["grade"]
-        fill_px     = t["fill_px"]
-        stop        = t.get("stop", 0)
-        r1          = t.get("r1", 0)
-        r2          = t.get("r2", 0)
-        pnl         = t["pnl"]
-        result      = t["result"]
-        signal_type = t.get("signal_type", "ORB")
-        reasons     = t.get("reasons", [])
-        confidence  = t.get("confidence", 0)
-        cat_score   = t.get("cat_score", 0)
+        ticker   = t["ticker"]
+        dir_word = "long" if t["direction"] == "BUY" else "short"
+        grade    = t["grade"]
+        fill_px  = t["fill_px"]
+        stop     = t.get("stop", 0)
+        r1       = t.get("r1", 0)
+        r2       = t.get("r2", 0)
+        pnl      = t["pnl"]
+        result   = t["result"]
+        stype    = t.get("signal_type", "ORB")
+        reasons  = t.get("reasons", [])
+        conf     = t.get("confidence", 0)
 
-        trade_num = ["First", "Second", "Third"][i]
+        num = ["First", "Second", "Third"][i]
 
-        # Grade description
-        grade_desc = {
-            "A": "Grade A — our highest-conviction setup. Full position size, all four criteria confirmed.",
-            "B": "Grade B — solid setup, three of four criteria met. Three-quarter position size.",
-            "C": "Grade C — valid breakout but fewer confirmations. Half position size with tighter targets.",
-        }.get(grade, f"Grade {grade}.")
+        # WHY — top 2 reasons, stripped clean
+        top_reasons = []
+        for r in reasons[:2]:
+            r = str(r).replace("✅","").replace("🟢","").replace("🔴","").strip(" -•")
+            if r:
+                top_reasons.append(r)
+        why = (". ".join(top_reasons) + ".") if top_reasons else ""
+        if conf:
+            why += f" Confidence: {conf}%."
 
-        # WHY we took it
-        why_parts = []
-        if reasons:
-            # Clean up reason strings for speech
-            clean = []
-            for r in reasons[:4]:
-                r = str(r).replace("✅", "").replace("🔴", "").replace("🟢", "")
-                r = r.replace("  ", " ").strip()
-                if r:
-                    clean.append(r)
-            if clean:
-                why_parts.append("The reasons for entering: " + ". ".join(clean) + ".")
-        if confidence:
-            why_parts.append(f"Signal confidence was {confidence} percent.")
-        if cat_score and cat_score != 0:
-            cat_desc = "positive" if cat_score > 0 else "slightly negative but within tolerance"
-            why_parts.append(f"Catalyst score was {cat_score:+d}, {cat_desc}.")
+        # ENTRY / LEVELS — one sentence
+        levels = f"In at ${fill_px:.2f}."
+        if stop: levels += f" Stop: ${stop:.2f}."
+        if r1:   levels += f" Target one: ${r1:.2f}."
+        if r2:   levels += f" Target two: ${r2:.2f}."
 
-        # Entry / risk levels
-        risk_per_share = abs(fill_px - stop) if stop else 0
-        r1_pct = abs(r1 - fill_px) / fill_px * 100 if r1 and fill_px else 0
-        r2_pct = abs(r2 - fill_px) / fill_px * 100 if r2 and fill_px else 0
-
-        level_parts = [f"Entry at ${fill_px:.2f}."]
-        if stop:
-            level_parts.append(f"Stop loss at ${stop:.2f}, risking ${risk_per_share:.2f} per share.")
-        if r1:
-            level_parts.append(f"First target at ${r1:.2f} — that is plus {r1_pct:.1f} percent.")
-        if r2:
-            level_parts.append(f"Second target at ${r2:.2f} — that is plus {r2_pct:.1f} percent.")
-        level_parts.append("The bot uses a two-leg bracket: half exits at target one, half rides to target two.")
-
-        # Outcome
+        # OUTCOME — punchy
         if result == "WIN":
-            if pnl > 500:
-                outcome = f"This was a strong winner — the trade returned ${pnl:,.0f}. Both legs hit target."
-            else:
-                outcome = f"A winner. The trade returned ${pnl:,.0f}. Target hit, bot booked the gain."
+            outcome = f"WIN. Plus ${pnl:,.0f}. Targets hit." if pnl > 300 else f"WIN. Plus ${pnl:,.0f}."
         elif result == "LOSS":
-            outcome = (
-                f"The stop was hit. Trade closed for a loss of ${abs(pnl):,.0f}. "
-                f"Loss was pre-defined — this is part of the strategy. "
-                f"One loss does not change the overall edge."
-            )
+            outcome = f"Stopped out. Minus ${abs(pnl):,.0f}. Stop did its job."
         else:
-            outcome = (
-                f"This one was a scratch — essentially breakeven at ${pnl:+,.0f}. "
-                f"The time-based stop likely closed it before either target was reached."
-            )
+            outcome = f"Scratch. Flat."
 
-        # Assemble trade narration
         parts.append(
-            f"{trade_num} trade — {ticker}, {signal_type} {dir_word} signal. {grade_desc}"
+            f"{num} trade. {ticker}. Grade {grade} {stype} {dir_word}. "
+            f"{why} {levels} {outcome}"
         )
-        if why_parts:
-            parts.append(" ".join(why_parts))
-        parts.append(" ".join(level_parts))
-        parts.append(f"Outcome: {outcome}")
 
-    # ── Scorecard narration ────────────────────────────────────────────────────
+    # ── Scorecard — 3 lines max ────────────────────────────────────────────────
     if n > 0:
-        qual = "excellent" if wr >= 70 else ("solid" if wr >= 55 else ("mixed" if wr >= 40 else "tough"))
         parts.append(
-            f"Now for the final scorecard on {day_name}. "
-            f"Total P&L: {pnl_word}. "
-            f"{n} trade{'s' if n != 1 else ''} placed — "
-            f"{n_wins} winner{'s' if n_wins != 1 else ''}, "
-            f"{n_losses} loss{'es' if n_losses != 1 else ''}. "
-            f"A {qual} win rate of {wr} percent. "
-            f"The paper account now stands at ${account_val:,.0f}."
+            f"Final score. {up_down.upper()} ${pnl_abs:,.0f}. "
+            f"{n_wins}W {n_losses}L. Win rate: {wr}%. "
+            f"Account: ${account_val:,.0f}."
         )
     else:
-        parts.append(
-            f"Final check for {day_name}. No trades taken today. "
-            f"Account unchanged at ${account_val:,.0f}."
-        )
+        parts.append(f"Account unchanged. ${account_val:,.0f}.")
 
-    parts.append(
-        "This is a fully automated paper trading system running live on Alpaca Markets. "
-        "Every trade is paper only — no real money at risk. "
-        "We are tracking week-by-week performance transparently. "
-        "This is not financial advice. See you tomorrow."
-    )
+    parts.append("Paper trading only. Not financial advice. Follow for daily recaps.")
 
-    return "  ".join(parts)
+    return "  ".join(p for p in parts if p.strip())
 
 
 def _ffmpeg_exe() -> str:
@@ -821,14 +759,15 @@ def _ffmpeg_exe() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
-async def _tts_async(text: str, voice: str, out_path: str) -> None:
+async def _tts_async(text: str, voice: str, rate: str, out_path: str) -> None:
     import edge_tts
-    await edge_tts.Communicate(text, voice).save(out_path)
+    await edge_tts.Communicate(text, voice, rate=rate).save(out_path)
 
 
-def _generate_tts(text: str, out_path: str, voice: str = VOICE) -> None:
+def _generate_tts(text: str, out_path: str,
+                  voice: str = VOICE, rate: str = VOICE_RATE) -> None:
     """Generate MP3 voiceover using Microsoft Edge TTS (free, no API key)."""
-    asyncio.run(_tts_async(text, voice, out_path))
+    asyncio.run(_tts_async(text, voice, rate, out_path))
     logger.info(f"TTS audio generated: {out_path}")
 
 
@@ -910,13 +849,14 @@ def generate_reel(signals_today: list, account: dict) -> None:
         frames = []
 
         frames += scene_intro(today_str, day_pnl, len(trades))       # 2.5 s
-        frames += scene_pnl_curve(trades, day_pnl)                    # 8.75 s
+        frames += _flash()
+        frames += scene_pnl_curve(trades, day_pnl)                    # 5 s
 
-        bars_cache = {}
         for trade in trades[:3]:
-            bars_cache[trade["ticker"]] = _get_bars(trade["ticker"])
-            frames += scene_trade_card(trade, bars_cache[trade["ticker"]])  # 4.2 s each
+            frames += _flash()
+            frames += scene_trade_card(trade, _get_bars(trade["ticker"]))  # 4.2 s each
 
+        frames += _flash()
         scorecard_frames = scene_scorecard(trades, day_pnl, account_val, today_str)
         frames += scorecard_frames
 
