@@ -508,6 +508,13 @@ def run_eod() -> None:
     _brain.update_daily_pnl(get_daily_pnl())
     logger.info(f"EOD: day P&L ${acct.get('day_pnl',0):+,.0f}  week ${_brain.get_weekly_pnl():+,.0f}")
 
+    # Generate daily Instagram reel — saves to Desktop/Trading_Reels/ + sends via Telegram
+    try:
+        from reel_generator import generate_reel
+        generate_reel(signals_today=_signals_today, account=acct)
+    except Exception as _reel_err:
+        logger.warning(f"Reel generation skipped: {_reel_err}")
+
 
 def run_weekly_summary() -> None:
     """Friday 4:15 PM ET — full week recap sent to Telegram."""
