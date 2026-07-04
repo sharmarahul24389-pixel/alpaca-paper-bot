@@ -46,6 +46,7 @@ GOLD  = "#f59e0b"
 WHITE = "#f1f5f9"
 LGRAY = "#94a3b8"
 DGRAY = "#334155"
+DRED  = "#991b1b"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -61,11 +62,11 @@ def _new_fig():
 def _to_rgb(fig) -> np.ndarray:
     """Render a matplotlib figure → H × W × 3 uint8 numpy array."""
     fig.canvas.draw()
-    arr = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
     w, h = fig.canvas.get_width_height()
-    arr = arr.reshape(h, w, 3)
+    # buffer_rgba() works in all modern matplotlib versions (3.8+)
+    arr = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
     plt.close(fig)
-    return arr
+    return arr[:, :, :3]  # RGBA → RGB
 
 
 def _hold(frame: np.ndarray, n: int) -> list:
@@ -168,7 +169,8 @@ def scene_intro(today_str: str, day_pnl: float, n_trades: int) -> list:
     ax.add_patch(FancyBboxPatch((0.35, 0.60), 0.30, 0.27,
                                 boxstyle="round,pad=0.02",
                                 facecolor=CARD, edgecolor=TEAL, linewidth=2))
-    ax.text(0.50, 0.76, "🤖", ha="center", va="center", fontsize=52)
+    ax.text(0.50, 0.76, "BOT", ha="center", va="center",
+            fontsize=44, fontweight="bold", color=TEAL)
     ax.text(0.50, 0.63, "Auto Trader", ha="center", va="center",
             fontsize=13, color=LGRAY)
 
@@ -441,7 +443,7 @@ def scene_trade_card(trade: dict, bars) -> list:
     # Divider
     ax_r.axhline(0.48, color=DGRAY, linewidth=0.7, xmin=0.02, xmax=0.98)
 
-    ax_r.text(0.50, 0.22, "📄  Paper Trading Only — Not Financial Advice",
+    ax_r.text(0.50, 0.22, "Paper Trading Only — Not Financial Advice",
               ha="center", va="center", fontsize=9, color=LGRAY,
               transform=ax_r.transAxes)
 
