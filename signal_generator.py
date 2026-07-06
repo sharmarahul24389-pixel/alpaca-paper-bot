@@ -210,8 +210,8 @@ def generate_signal(analysis: dict) -> Signal:
     # 5. RELATIVE STRENGTH vs SPY  (3 pts)
     # =========================================================================
     rs_vs_spy      = round(day_pct - spy_day_pct, 2)
-    rs_buy_confirm  = rs_vs_spy >= 1.5   # raised from 1.0 — filters weaker leaders
-    rs_sell_confirm = rs_vs_spy <= -1.5  # raised from -1.0
+    rs_buy_confirm  = rs_vs_spy >= 1.0
+    rs_sell_confirm = rs_vs_spy <= -1.0
 
     if rs_buy_confirm:
         buy_score += 3
