@@ -1,7 +1,7 @@
 ﻿import logging
 import pandas as pd
-import yfinance as yf
 
+from alpaca_data import get_bars_multi
 from config import TOP_MOVERS_COUNT, MIN_PRICE, MIN_VOLUME, MAX_TICKERS_TO_SCAN
 
 logger = logging.getLogger(__name__)
@@ -109,33 +109,28 @@ _premarket_order: list[str] = []  # refreshed each morning by sort_by_premarket_
 
 def sort_by_premarket_activity() -> None:
     """
-    Called at 9:20 AM. Downloads 2-day daily bars via yfinance for the full universe
-    and sorts all tickers by abs(overnight_gap%) so the most active stocks fill the
+    Called at 9:20 AM. Fetches 2-day daily bars from Alpaca for the full universe
+    and sorts tickers by abs(overnight_gap%) so the most active stocks fill the
     MAX_TICKERS_TO_SCAN window first. Falls back to static order on any failure.
     """
     global _premarket_order
     all_tickers = _USER_WATCHLIST + [t for t in _STOCK_UNIVERSE if t not in _USER_WATCHLIST]
     try:
-        raw = yf.download(all_tickers, period="2d", interval="1d",
-                          auto_adjust=True, progress=False)
-        closes = raw["Close"]
-        if len(closes) < 2:
-            raise ValueError("not enough bars")
+        data = get_bars_multi(all_tickers, "1d", days=5)
         scores: dict[str, float] = {}
-        for t in closes.columns:
+        for t, df in data.items():
             try:
-                c = closes[t].dropna()
-                if len(c) >= 2:
-                    scores[t] = abs(float(c.iloc[-1]) - float(c.iloc[-2])) / float(c.iloc[-2])
+                closes = df["Close"].dropna()
+                if len(closes) >= 2:
+                    scores[t] = abs(float(closes.iloc[-1]) - float(closes.iloc[-2])) / float(closes.iloc[-2])
             except Exception:
                 pass
-        # watchlist always first, then universe sorted by overnight move
         wl_sorted   = sorted([t for t in _USER_WATCHLIST if t in scores],
                              key=lambda t: scores.get(t, 0), reverse=True)
         rest_sorted = sorted([t for t in all_tickers if t not in _USER_WATCHLIST and t in scores],
                              key=lambda t: scores.get(t, 0), reverse=True)
         _premarket_order = wl_sorted + rest_sorted
-        logger.info(f"Pre-market sort: top movers = {[t for t in _premarket_order[:10]]}")
+        logger.info(f"Pre-market sort: top movers = {_premarket_order[:10]}")
     except Exception as exc:
         logger.warning(f"Pre-market sort failed ({exc}), using static order")
         _premarket_order = []
@@ -164,36 +159,18 @@ def get_top_movers(
     min_volume: int = MIN_VOLUME,
 ) -> list[dict]:
     tickers = get_watchlist_tickers()[:MAX_TICKERS_TO_SCAN]
-    logger.info(f"Scanning {len(tickers)} tickers (S&P 500 + Nasdaq-100) ...")
+    logger.info(f"Scanning {len(tickers)} tickers via Alpaca ...")
 
-    try:
-        raw = yf.download(
-            tickers,
-            period="2d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-        )
-    except Exception as exc:
-        logger.error(f"Bulk download failed: {exc}")
-        return []
-
-    try:
-        close_df: pd.DataFrame = raw["Close"]
-        volume_df: pd.DataFrame = raw["Volume"]
-    except KeyError:
-        logger.error("Unexpected data shape from yfinance")
-        return []
-
-    if len(close_df) < 2:
-        logger.warning("Not enough daily bars to compute moves")
+    data = get_bars_multi(tickers, "1d", days=5)
+    if not data:
+        logger.error("Alpaca bulk daily bars returned empty")
         return []
 
     movers: list[dict] = []
-    for ticker in close_df.columns:
+    for ticker, df in data.items():
         try:
-            closes  = close_df[ticker].dropna()
-            volumes = volume_df[ticker].dropna()
+            closes  = df["Close"].dropna()
+            volumes = df["Volume"].dropna()
             if len(closes) < 2 or len(volumes) < 1:
                 continue
 
@@ -208,7 +185,7 @@ def get_top_movers(
             momentum_score = abs(pct_change) * volume
 
             movers.append({
-                "ticker":         str(ticker),
+                "ticker":         ticker,
                 "price":          curr_close,
                 "pct_change":     pct_change,
                 "volume":         int(volume),
@@ -236,29 +213,11 @@ def get_postmarket_setups(count: int = MAX_TICKERS_TO_SCAN) -> dict:
       gap_fills      — opened >1.5 % gap but closed flat (fade candidate)
     """
     tickers = get_watchlist_tickers()[:count]
-    logger.info(f"Post-market setup scan: downloading 30d daily bars for {len(tickers)} tickers")
+    logger.info(f"Post-market setup scan: fetching 30d daily bars for {len(tickers)} tickers via Alpaca")
 
-    try:
-        raw = yf.download(
-            tickers, period="30d", interval="1d",
-            auto_adjust=True, progress=False,
-        )
-    except Exception as exc:
-        logger.error(f"Post-market download failed: {exc}")
-        return {}
-
-    try:
-        close_df  = raw["Close"]
-        high_df   = raw["High"]
-        low_df    = raw["Low"]
-        open_df   = raw["Open"]
-        vol_df    = raw["Volume"]
-    except KeyError:
-        logger.error("Unexpected data shape in post-market download")
-        return {}
-
-    if len(close_df) < 22:
-        logger.warning("Not enough daily bars for post-market setup")
+    data = get_bars_multi(tickers, "1d", days=30)
+    if not data:
+        logger.error("Post-market Alpaca fetch returned empty")
         return {}
 
     results: dict = {
@@ -270,13 +229,13 @@ def get_postmarket_setups(count: int = MAX_TICKERS_TO_SCAN) -> dict:
         "gap_fills":      [],
     }
 
-    for ticker in close_df.columns:
+    for ticker, df in data.items():
         try:
-            closes  = close_df[ticker].dropna()
-            highs   = high_df[ticker].dropna()
-            lows    = low_df[ticker].dropna()
-            opens   = open_df[ticker].dropna()
-            volumes = vol_df[ticker].dropna()
+            closes  = df["Close"].dropna()
+            highs   = df["High"].dropna()
+            lows    = df["Low"].dropna()
+            opens   = df["Open"].dropna()
+            volumes = df["Volume"].dropna()
 
             if len(closes) < 22 or len(volumes) < 21:
                 continue
@@ -296,7 +255,7 @@ def get_postmarket_setups(count: int = MAX_TICKERS_TO_SCAN) -> dict:
             vol_avg20 = float(volumes.iloc[-21:-1].mean())
             vol_ratio = today_vol / vol_avg20 if vol_avg20 > 0 else 1.0
 
-            t = str(ticker)
+            t = ticker
 
             # ── Breakout: closed above yesterday's high ────────────────────────
             if today_close > prev_high * 1.001:

@@ -6,8 +6,8 @@ import json, os, logging
 from datetime import date, datetime, timedelta
 from collections import defaultdict
 
-import yfinance as yf
 import pandas as pd
+from alpaca_data import get_bars
 
 log = logging.getLogger(__name__)
 STATE_FILE = os.path.join(os.environ.get("TMPDIR", "/tmp"), "brain_state.json")
@@ -73,12 +73,13 @@ def get_regime(force_refresh=False) -> str:
         if age < 1800:
             return state.get("last_regime", "UNKNOWN")
     try:
-        spy = yf.download("SPY",  period="25d", interval="1d",
-                          auto_adjust=True, progress=False)
-        vix = yf.download("^VIX", period="5d",  interval="1d",
-                          auto_adjust=True, progress=False)
-        spy_ret = (float(spy["Close"].iloc[-1]) / float(spy["Close"].iloc[0]) - 1) * 100
-        cur_vix = float(vix["Close"].iloc[-1])
+        spy_df  = get_bars("SPY", "1d", days=30)
+        if spy_df is None or len(spy_df) < 2:
+            raise ValueError("SPY bars unavailable")
+        spy_ret = (float(spy_df["Close"].iloc[-1]) / float(spy_df["Close"].iloc[0]) - 1) * 100
+        # VIX not available on Alpaca IEX; estimate volatility from SPY daily returns
+        spy_std = float(spy_df["Close"].pct_change().dropna().tail(5).std()) * 100 * (252 ** 0.5)
+        cur_vix = spy_std
 
         if cur_vix > 25:
             regime = "VOLATILE"

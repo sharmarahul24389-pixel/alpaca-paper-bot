@@ -8,9 +8,8 @@ import logging
 from datetime import datetime
 
 import pytz
-import yfinance as yf
 
-from analyzer import _flatten_columns
+from alpaca_data import get_bars
 
 logger = logging.getLogger(__name__)
 _ET    = pytz.timezone("America/New_York")
@@ -88,12 +87,9 @@ def get_sector_trend(ticker: str) -> str:
         return entry["trend"]
 
     try:
-        df = yf.download(etf, period="5d", interval="1h",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
+        df = get_bars(etf, "1h", days=7)
 
-        if len(df) < 5:
+        if df is None or len(df) < 5:
             return "NEUTRAL"
 
         close = df["Close"]

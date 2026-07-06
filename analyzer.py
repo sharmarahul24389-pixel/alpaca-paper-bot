@@ -5,18 +5,12 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import pytz
-import yfinance as yf
+
+from alpaca_data import get_bars
 
 logger = logging.getLogger(__name__)
 _ET    = pytz.timezone("America/New_York")
 
-
-def _flatten_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalise MultiIndex columns that newer yfinance can emit for single tickers."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df = df.copy()
-        df.columns = df.columns.get_level_values(0)
-    return df
 
 
 def _vwap(df: pd.DataFrame) -> pd.Series:
@@ -111,27 +105,11 @@ def _pdh_pdl_from_df(df: pd.DataFrame) -> dict:
 
 
 def fetch_30min(ticker: str, days: int = 5) -> pd.DataFrame | None:
-    try:
-        df = yf.download(ticker, period=f"{days}d", interval="30m",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
-        return df if not df.empty else None
-    except Exception as exc:
-        logger.error(f"{ticker}: fetch failed -- {exc}")
-        return None
+    return get_bars(ticker, "30m", days=days + 4)   # +4 for weekend buffer
 
 
 def fetch_5min(ticker: str) -> pd.DataFrame | None:
-    try:
-        df = yf.download(ticker, period="2d", interval="5m",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
-        return df if not df.empty else None
-    except Exception as exc:
-        logger.error(f"{ticker}: 5m fetch failed -- {exc}")
-        return None
+    return get_bars(ticker, "5m", days=3)
 
 
 _orb15_cache: dict = {}   # ticker -> {date, high, low, range, mid}
@@ -212,15 +190,12 @@ _spy_cache: dict = {"pct": 0.0, "ts": 0.0}
 
 
 def get_spy_day_pct() -> float:
-    """SPY % change vs yesterday's close. Cached 5 min to avoid redundant downloads."""
+    """SPY % change vs yesterday's close. Cached 5 min."""
     if time.time() - _spy_cache["ts"] < 300:
         return _spy_cache["pct"]
     try:
-        df = yf.download("SPY", period="2d", interval="1d",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
-        if len(df) >= 2:
+        df = get_bars("SPY", "1d", days=5)
+        if df is not None and len(df) >= 2:
             pct = float(
                 (df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
             )
@@ -244,12 +219,9 @@ def _4h_ema_trend(ticker: str) -> str:
         return cached["trend"]
 
     try:
-        df = yf.download(ticker, period="60d", interval="1h",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
+        df = get_bars(ticker, "1h", days=60)
 
-        if len(df) < 40:
+        if df is None or len(df) < 40:
             result = "NEUTRAL"
         else:
             df4 = df.resample("4h").agg({
@@ -296,6 +268,7 @@ def get_days_to_earnings(ticker: str) -> int | None:
 
     result = None
     try:
+        import yfinance as yf
         tkr = yf.Ticker(ticker)
         cal = tkr.calendar
         if cal is not None and not (hasattr(cal, "empty") and cal.empty):
