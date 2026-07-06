@@ -41,7 +41,7 @@ from config import (
 from levels import get_pivot_levels
 from options_flow import get_options_sentiment
 from position_sizer import calculate_position
-from scanner import get_top_movers, _USER_WATCHLIST, sort_by_premarket_activity
+from scanner import get_top_movers, _USER_WATCHLIST
 from signal_generator import generate_signal
 from swing_analyzer import analyze_swing, generate_swing_signal
 from trend_filter import get_market_regime, get_daily_trend, get_relative_strength
@@ -331,7 +331,7 @@ def run_orb_scan() -> None:
         analysis = analyze(ticker)
         day_pct_val = analysis.get("day_pct", 0) if analysis else 0
         # Skip if not moving enough, or already too extended (ORB play is over)
-        if not analysis or abs(day_pct_val) < 0.3 or abs(day_pct_val) > 6.0:
+        if not analysis or abs(day_pct_val) < 0.5 or abs(day_pct_val) > 4.0:
             continue
         analysis.update({
             "market_regime":     regime,
@@ -688,10 +688,6 @@ def main() -> None:
     # Time stop: every 30 min during market hours
     sched.add_job(run_time_stop_check, "cron", day_of_week="mon-fri",
                   hour=f"10-{MARKET_CLOSE_HOUR}", minute="0,30", id="time_stop")
-
-    # Pre-market sort at 9:20 AM — prioritises today's active stocks in the scan window
-    sched.add_job(sort_by_premarket_activity, "cron", day_of_week="mon-fri",
-                  hour=9, minute=20, id="premarket_sort")
 
     # Brain + catalyst refresh at 9:25 AM
     sched.add_job(run_brain_update, "cron", day_of_week="mon-fri",

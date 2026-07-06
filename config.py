@@ -13,7 +13,7 @@ FILL_CHECK_INTERVAL = 5
 
 # Auto-trade filters
 AUTO_MIN_GRADE        = os.getenv("AUTO_MIN_GRADE", "B")
-AUTO_MIN_CONFIDENCE   = int(os.getenv("AUTO_MIN_CONFIDENCE", "55"))
+AUTO_MIN_CONFIDENCE   = int(os.getenv("AUTO_MIN_CONFIDENCE", "60"))
 AUTO_MAX_DAILY_LOSS   = float(os.getenv("AUTO_MAX_DAILY_LOSS", "1000"))
 # No hard signal count limit — brain governs quality, loss limit governs risk
 AUTO_MAX_SIGNALS      = int(os.getenv("AUTO_MAX_SIGNALS", "999"))
@@ -45,10 +45,10 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Scanner ────────────────────────────────────────────────────────────────────
-TOP_MOVERS_COUNT    = 30
+TOP_MOVERS_COUNT    = 15
 MIN_PRICE           = 15.0
 MIN_VOLUME          = 750_000
-MAX_TICKERS_TO_SCAN = 100
+MAX_TICKERS_TO_SCAN = 40
 
 # ── Technical thresholds ───────────────────────────────────────────────────────
 RSI_OVERSOLD             = 35

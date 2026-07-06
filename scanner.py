@@ -105,50 +105,8 @@ _USER_WATCHLIST = [
 ]
 
 
-_premarket_order: list[str] = []  # refreshed each morning by sort_by_premarket_activity()
-
-def sort_by_premarket_activity() -> None:
-    """
-    Called at 9:20 AM. Downloads 2-day daily bars via yfinance for the full universe
-    and sorts all tickers by abs(overnight_gap%) so the most active stocks fill the
-    MAX_TICKERS_TO_SCAN window first. Falls back to static order on any failure.
-    """
-    global _premarket_order
-    all_tickers = _USER_WATCHLIST + [t for t in _STOCK_UNIVERSE if t not in _USER_WATCHLIST]
-    try:
-        raw = yf.download(all_tickers, period="2d", interval="1d",
-                          auto_adjust=True, progress=False)
-        closes = raw["Close"]
-        if len(closes) < 2:
-            raise ValueError("not enough bars")
-        scores: dict[str, float] = {}
-        for t in closes.columns:
-            try:
-                c = closes[t].dropna()
-                if len(c) >= 2:
-                    scores[t] = abs(float(c.iloc[-1]) - float(c.iloc[-2])) / float(c.iloc[-2])
-            except Exception:
-                pass
-        # watchlist always first, then universe sorted by overnight move
-        wl_sorted   = sorted([t for t in _USER_WATCHLIST if t in scores],
-                             key=lambda t: scores.get(t, 0), reverse=True)
-        rest_sorted = sorted([t for t in all_tickers if t not in _USER_WATCHLIST and t in scores],
-                             key=lambda t: scores.get(t, 0), reverse=True)
-        _premarket_order = wl_sorted + rest_sorted
-        logger.info(f"Pre-market sort: top movers = {[t for t in _premarket_order[:10]]}")
-    except Exception as exc:
-        logger.warning(f"Pre-market sort failed ({exc}), using static order")
-        _premarket_order = []
-
-
 def get_watchlist_tickers() -> list[str]:
-    """
-    Returns tickers sorted by pre-market activity (if sort_by_premarket_activity()
-    has run today) so MAX_TICKERS_TO_SCAN window captures the day's active stocks.
-    Falls back to static order.
-    """
-    if _premarket_order:
-        return _premarket_order
+    """User watchlist stocks come first, guaranteeing they're never cut off by MAX_TICKERS_TO_SCAN."""
     rest = [t for t in _STOCK_UNIVERSE if t not in _USER_WATCHLIST]
     return _USER_WATCHLIST + rest
 
