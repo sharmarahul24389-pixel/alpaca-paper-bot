@@ -59,7 +59,7 @@ VOLUME_RATIO_THRESHOLD   = 2.0
 RR_RATIO          = 2.0
 RR_RATIO_B        = 2.0
 RR_RATIO_C        = 1.5
-ATR_SL_MULTIPLIER = 1.0
+ATR_SL_MULTIPLIER = 0.75
 
 # ── Daily profit locks ─────────────────────────────────────────────────────────
 DAILY_PROFIT_SOFT_LOCK = 700
