@@ -1,8 +1,7 @@
 import logging
 
-import yfinance as yf
-
-from analyzer import _flatten_columns, _rsi, _macd, _atr
+from alpaca_data import get_bars
+from analyzer import _rsi, _macd, _atr
 from config import (
     ACCOUNT_SIZE,
     MIN_SIGNAL_SCORE,
@@ -19,10 +18,10 @@ _SWING_MAX_SCORE = 13  # RSI(3)+MACD(3)+EMA(2)+Weekly(2)+Vol(1)+RS(1)+Options(1)
 
 def _weekly_trend(ticker: str) -> str:
     try:
-        df = yf.download(ticker, period="6mo", interval="1wk",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
+        df = get_bars(ticker, "1d", days=180)
+        if df is None:
+            return "NEUTRAL"
+        df = df.resample("W").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
         if len(df) < 20:
             return "NEUTRAL"
         close = df["Close"]
@@ -42,10 +41,10 @@ def _weekly_trend(ticker: str) -> str:
 
 def analyze_swing(ticker: str) -> dict | None:
     try:
-        df = yf.download(ticker, period="120d", interval="1d",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
+        df = get_bars(ticker, "1d", days=120)
+        if df is None:
+            return None
+        df = df.dropna()
     except Exception as exc:
         logger.error(f"{ticker}: swing fetch failed — {exc}")
         return None

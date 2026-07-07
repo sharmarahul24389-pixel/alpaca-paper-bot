@@ -1,18 +1,16 @@
 import logging
-import yfinance as yf
-from analyzer import _flatten_columns
+from alpaca_data import get_bars
 
 logger = logging.getLogger(__name__)
-
 PROXIMITY_PCT = 0.005  # Within 0.5% of a level
 
 
 def get_pivot_levels(ticker: str) -> dict:
     try:
-        df = yf.download(ticker, period="5d", interval="1d",
-                         auto_adjust=True, progress=False)
-        df = _flatten_columns(df)
-        df.dropna(inplace=True)
+        df = get_bars(ticker, "1d", days=5)
+        if df is None:
+            return {}
+        df = df.dropna()
         if len(df) < 2:
             return {}
 
