@@ -697,10 +697,7 @@ def main() -> None:
     sched.add_job(run_brain_update, "cron", day_of_week="mon-fri",
                   hour=9, minute=25, id="brain_update")
 
-    # News + Truth Social check every 30 min during market hours
-    sched.add_job(run_news_check, "cron", day_of_week="mon-fri",
-                  hour="9-15", minute="0,30", id="news_check",
-                  misfire_grace_time=120)
+    # News check disabled — whatsapp_signal_bot already sends RSS alerts to same Telegram chat
 
     # Mid-day status
     sched.add_job(run_position_status, "cron", day_of_week="mon-fri",
