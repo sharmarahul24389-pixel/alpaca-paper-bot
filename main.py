@@ -563,7 +563,7 @@ def run_weekly_summary() -> None:
         "",
         f"💰 Week P&L  : <b>${week_pnl:+,.0f}</b>",
         f"   Equity    : ${equity:,.0f}",
-        f"   Return    : {week_pnl/100_000*100:+.2f}%",
+        f"   Return    : {week_pnl/equity*100:+.2f}%",
         "",
         f"📈 Trades    : {len(week_trades)}  |  W:{len(wins)} L:{len(losses)} S:{len(scratches)}",
         f"   Win Rate  : {win_rate:.1f}%",
@@ -707,9 +707,7 @@ def main() -> None:
     sched.add_job(run_eod, "cron", day_of_week="mon-fri",
                   hour=MARKET_CLOSE_HOUR, minute=5, id="eod")
 
-    # Weekly summary — Friday 4:15 PM ET
-    sched.add_job(run_weekly_summary, "cron", day_of_week="fri",
-                  hour=MARKET_CLOSE_HOUR, minute=15, id="weekly")
+    # Weekly summary disabled — whatsapp_signal_bot sends weekly performance to same Telegram chat
 
     logger.info(
         "Bot v3 ready:\n"
