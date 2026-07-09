@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # S&P 500 + Nasdaq-100 combined universe — hardcoded to avoid external fetch failures on Railway
 _STOCK_UNIVERSE = [
     # ── Mega-cap / S&P 500 core ────────────────────────────────────────────────
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "BRK-B",
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO",
     "JPM", "LLY", "V", "XOM", "UNH", "MA", "JNJ", "PG", "HD", "COST", "MRK",
     "ABBV", "CVX", "CRM", "BAC", "NFLX", "AMD", "KO", "PEP", "TMO", "ORCL",
     "ACN", "MCD", "CSCO", "LIN", "ABT", "TXN", "WMT", "DHR", "NEE", "NKE",
