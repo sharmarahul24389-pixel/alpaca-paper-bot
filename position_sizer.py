@@ -30,6 +30,13 @@ def calculate_position(entry: float, stop_loss: float, grade: str = "C",
         return {}
 
     units          = max(1, int(risk_amount / risk_per_unit))
+
+    # Hard cap: single position cannot exceed 20% of account regardless of ATR
+    # Prevents low-price/tight-ATR stocks (e.g. T) consuming entire account
+    MAX_POSITION_PCT = 0.20
+    max_units  = int(effective_account * MAX_POSITION_PCT / entry)
+    units      = min(units, max(1, max_units))
+
     position_value = round(units * entry, 2)
     target_pnl     = round(risk_amount * rr, 2)
     pct_of_account = round(position_value / effective_account * 100, 1)

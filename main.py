@@ -706,7 +706,7 @@ def main() -> None:
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=10, minute="*/5",  id="orb_10")
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
-                  hour=f"11-{MARKET_CLOSE_HOUR}", minute=f"*/{INTERVAL_MINUTES}",
+                  hour="11-15", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
 
     # ORB diagnostic: 10:00 AM — confirms IEX data is populating before scans ramp up
@@ -724,7 +724,7 @@ def main() -> None:
 
     # Time stop: every 30 min during market hours
     sched.add_job(run_time_stop_check, "cron", day_of_week="mon-fri",
-                  hour=f"10-{MARKET_CLOSE_HOUR}", minute="0,30", id="time_stop")
+                  hour="10-15", minute="0,30", id="time_stop")
 
     # Pre-market sort at 9:20 AM — prioritises today's active stocks in the scan window
     sched.add_job(sort_by_premarket_activity, "cron", day_of_week="mon-fri",
