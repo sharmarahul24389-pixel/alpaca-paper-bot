@@ -120,9 +120,13 @@ def sort_by_premarket_activity() -> None:
         scores: dict[str, float] = {}
         for t, df in data.items():
             try:
-                closes = df["Close"].dropna()
+                closes  = df["Close"].dropna()
+                volumes = df["Volume"].dropna()
                 if len(closes) >= 2:
-                    scores[t] = abs(float(closes.iloc[-1]) - float(closes.iloc[-2])) / float(closes.iloc[-2])
+                    gap = abs(float(closes.iloc[-1]) - float(closes.iloc[-2])) / float(closes.iloc[-2])
+                    # weight by yesterday's full volume so high-volume movers rank higher
+                    prev_vol = float(volumes.iloc[-2]) if len(volumes) >= 2 else 1.0
+                    scores[t] = gap * prev_vol
             except Exception:
                 pass
         wl_sorted   = sorted([t for t in _USER_WATCHLIST if t in scores],
@@ -176,13 +180,15 @@ def get_top_movers(
 
             curr_close = float(closes.iloc[-1])
             prev_close = float(closes.iloc[-2])
+            # Use yesterday's full-day volume for the filter — today's bar is partial
+            vol_filter = float(volumes.iloc[-2]) if len(volumes) >= 2 else float(volumes.iloc[-1])
             volume     = float(volumes.iloc[-1])
 
-            if curr_close < min_price or volume < min_volume:
+            if curr_close < min_price or vol_filter < min_volume:
                 continue
 
             pct_change     = (curr_close - prev_close) / prev_close
-            momentum_score = abs(pct_change) * volume
+            momentum_score = abs(pct_change) * vol_filter
 
             movers.append({
                 "ticker":         ticker,
