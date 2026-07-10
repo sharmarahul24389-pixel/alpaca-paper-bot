@@ -74,19 +74,28 @@ def get_regime(force_refresh=False) -> str:
         if age < 1800:
             return state.get("last_regime", "UNKNOWN")
     try:
-        spy_df  = get_bars("SPY", "1d", days=30)
+        spy_df = get_bars("SPY", "1d", days=30)
+        qqq_df = get_bars("QQQ", "1d", days=30)
         if spy_df is None or len(spy_df) < 2:
             raise ValueError("SPY bars unavailable")
+        if qqq_df is None or len(qqq_df) < 2:
+            raise ValueError("QQQ bars unavailable")
+
         spy_ret = (float(spy_df["Close"].iloc[-1]) / float(spy_df["Close"].iloc[0]) - 1) * 100
-        # VIX not available on Alpaca IEX; estimate volatility from SPY daily returns
+        qqq_ret = (float(qqq_df["Close"].iloc[-1]) / float(qqq_df["Close"].iloc[0]) - 1) * 100
+        # Blend SPY + QQQ — our universe is Nasdaq-heavy so weight QQQ slightly more
+        blended_ret = spy_ret * 0.4 + qqq_ret * 0.6
+
+        # Volatility from SPY (more liquid, tighter spreads)
         spy_std = float(spy_df["Close"].pct_change().dropna().tail(5).std()) * 100 * (252 ** 0.5)
-        cur_vix = spy_std
+        qqq_std = float(qqq_df["Close"].pct_change().dropna().tail(5).std()) * 100 * (252 ** 0.5)
+        cur_vix = max(spy_std, qqq_std)  # take the worse of the two
 
         if cur_vix > 25:
             regime = "VOLATILE"
-        elif spy_ret > 3:
+        elif blended_ret > 3:
             regime = "BULL"
-        elif spy_ret < -3:
+        elif blended_ret < -3:
             regime = "BEAR"
         else:
             regime = "CHOPPY"
