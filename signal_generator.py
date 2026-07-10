@@ -207,18 +207,22 @@ def generate_signal(analysis: dict) -> Signal:
         sell_reasons.append(f"Sector {sector_etf} bearish (aligned)")
 
     # =========================================================================
-    # 5. RELATIVE STRENGTH vs SPY  (3 pts)
+    # 5. RELATIVE STRENGTH vs blended SPY+QQQ benchmark  (3 pts)
     # =========================================================================
-    rs_vs_spy      = round(day_pct - spy_day_pct, 2)
-    rs_buy_confirm  = rs_vs_spy >= 1.0
-    rs_sell_confirm = rs_vs_spy <= -1.0
+    # Blend matches regime detection weighting — our universe is Nasdaq-heavy
+    # so a pure SPY benchmark undersells RS for tech stocks
+    qqq_day_pct   = analysis.get("qqq_day_pct", spy_day_pct)
+    benchmark_pct = spy_day_pct * 0.4 + qqq_day_pct * 0.6
+    rs_vs_bench   = round(day_pct - benchmark_pct, 2)
+    rs_buy_confirm  = rs_vs_bench >= 1.0
+    rs_sell_confirm = rs_vs_bench <= -1.0
 
     if rs_buy_confirm:
         buy_score += 3
-        buy_reasons.append(f"RS vs SPY: +{rs_vs_spy:.1f}% (stock leading market)")
+        buy_reasons.append(f"RS vs benchmark: +{rs_vs_bench:.1f}% (leading SPY+QQQ)")
     elif rs_sell_confirm:
         sell_score += 3
-        sell_reasons.append(f"RS vs SPY: {rs_vs_spy:.1f}% (stock lagging market)")
+        sell_reasons.append(f"RS vs benchmark: {rs_vs_bench:.1f}% (lagging SPY+QQQ)")
 
     # =========================================================================
     # 6. 4-HOUR EMA TREND  (2 pts)

@@ -53,7 +53,7 @@ MAX_TICKERS_TO_SCAN = 100
 # ── Technical thresholds ───────────────────────────────────────────────────────
 RSI_OVERSOLD             = 35
 RSI_OVERBOUGHT           = 65
-VOLUME_RATIO_THRESHOLD   = 2.0
+VOLUME_RATIO_THRESHOLD   = 1.5   # Grade B vol floor; Grade A still requires 2× (hardcoded in signal_generator)
 
 # ── Risk / Reward ──────────────────────────────────────────────────────────────
 RR_RATIO          = 2.0

@@ -184,9 +184,10 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(com=period - 1, min_periods=period).mean()
 
 
-# -- SPY relative strength (cached 5 min) -------------------------------------
+# -- SPY / QQQ relative strength (cached 5 min) --------------------------------
 
 _spy_cache: dict = {"pct": 0.0, "ts": 0.0}
+_qqq_cache: dict = {"pct": 0.0, "ts": 0.0}
 
 
 def get_spy_day_pct() -> float:
@@ -204,6 +205,24 @@ def get_spy_day_pct() -> float:
             return _spy_cache["pct"]
     except Exception as exc:
         logger.warning(f"SPY day_pct failed: {exc}")
+    return 0.0
+
+
+def get_qqq_day_pct() -> float:
+    """QQQ % change vs yesterday's close. Cached 5 min."""
+    if time.time() - _qqq_cache["ts"] < 300:
+        return _qqq_cache["pct"]
+    try:
+        df = get_bars("QQQ", "1d", days=5)
+        if df is not None and len(df) >= 2:
+            pct = float(
+                (df["Close"].iloc[-1] - df["Close"].iloc[-2]) / df["Close"].iloc[-2] * 100
+            )
+            _qqq_cache["pct"] = round(pct, 2)
+            _qqq_cache["ts"]  = time.time()
+            return _qqq_cache["pct"]
+    except Exception as exc:
+        logger.warning(f"QQQ day_pct failed: {exc}")
     return 0.0
 
 

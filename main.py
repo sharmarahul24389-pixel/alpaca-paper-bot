@@ -24,7 +24,7 @@ import requests
 import pytz
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from analyzer import analyze, get_spy_day_pct, get_days_to_earnings
+from analyzer import analyze, get_spy_day_pct, get_qqq_day_pct, get_days_to_earnings
 from config import (
     TIMEZONE, MARKET_OPEN_HOUR, MARKET_OPEN_MINUTE,
     MARKET_CLOSE_HOUR, MARKET_CLOSE_MINUTE, TOP_MOVERS_COUNT,
@@ -324,6 +324,7 @@ def run_orb_scan() -> None:
     logger.info("=== ORB scan ===")
     regime  = get_market_regime()
     spy_pct = get_spy_day_pct()
+    qqq_pct = get_qqq_day_pct()
 
     movers = get_top_movers(count=TOP_MOVERS_COUNT, min_price=MIN_PRICE, min_volume=MIN_VOLUME)
     for mover in movers:
@@ -336,6 +337,7 @@ def run_orb_scan() -> None:
         analysis.update({
             "market_regime":     regime,
             "spy_day_pct":       spy_pct,
+            "qqq_day_pct":       qqq_pct,
             "daily_trend":       get_daily_trend(ticker),
             "relative_strength": get_relative_strength(ticker),
             "pivot_levels":      get_pivot_levels(ticker),
