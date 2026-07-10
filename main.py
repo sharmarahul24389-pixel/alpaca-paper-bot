@@ -740,9 +740,9 @@ def main() -> None:
     sched.add_job(run_position_status, "cron", day_of_week="mon-fri",
                   hour=13, minute=0, id="midday")
 
-    # EOD
+    # EOD — fires at 3:55 PM ET (5 min before close) so market orders fill same session
     sched.add_job(run_eod, "cron", day_of_week="mon-fri",
-                  hour=MARKET_CLOSE_HOUR, minute=5, id="eod")
+                  hour=MARKET_CLOSE_HOUR - 1, minute=55, id="eod")
 
     # Weekly summary disabled — whatsapp_signal_bot sends weekly performance to same Telegram chat
 
