@@ -27,10 +27,11 @@ def _default_state() -> dict:
     }
 
 def _default_params() -> dict:
+    from config import AUTO_MIN_CONFIDENCE
     return {
-        "min_confidence_orb":   60,
-        "min_confidence_quant": 60,
-        "min_confidence_swing": 60,
+        "min_confidence_orb":   AUTO_MIN_CONFIDENCE,
+        "min_confidence_quant": AUTO_MIN_CONFIDENCE,
+        "min_confidence_swing": AUTO_MIN_CONFIDENCE,
         "position_size_mult":   1.0,   # multiplies risk_pct
         "skip_types":           [],    # e.g. ["QUANT"] when it's underperforming
     }
@@ -164,16 +165,17 @@ def _recalc_params(state: dict):
         params["position_size_mult"] = min(params["position_size_mult"], 0.85)
 
     # ── Confidence thresholds per signal type ─────────────────────────────────
+    from config import AUTO_MIN_CONFIDENCE
     for sig_type, key in [("ORB","min_confidence_orb"),
                            ("QUANT","min_confidence_quant"),
                            ("SWING","min_confidence_swing")]:
         wr = _win_rate(trades, signal_type=sig_type, lookback=20)
         if wr < 0.38:
-            params[key] = 72     # struggling — tighten a lot
+            params[key] = 72                  # struggling — tighten a lot
         elif wr < 0.48:
-            params[key] = 65     # below break-even — tighten a bit
+            params[key] = 65                  # below break-even — tighten a bit
         else:
-            params[key] = 60     # performing well — normal threshold
+            params[key] = AUTO_MIN_CONFIDENCE  # performing well — use Railway setting
 
     # ── Skip signal types that are genuinely broken ───────────────────────────
     skip = []
