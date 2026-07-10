@@ -431,6 +431,37 @@ def run_time_stop_check() -> None:
                 )
 
 
+def run_orb_diagnostic() -> None:
+    """10:00 AM — verify ORB data is populating from Alpaca IEX. Sent to Telegram."""
+    from analyzer import fetch_5min, _orb_from_df, _orb_15min
+    regime  = get_market_regime()
+    spy_pct = get_spy_day_pct()
+    movers  = get_top_movers(count=5, min_price=MIN_PRICE, min_volume=MIN_VOLUME)
+
+    lines = ["ORB DIAGNOSTIC — 10:00 AM\n"]
+    for m in movers[:3]:
+        ticker = m["ticker"]
+        try:
+            df5 = fetch_5min(ticker)
+            orb30 = _orb_from_df(df5) if df5 is not None else None
+            orb15 = _orb_15min(ticker, df5) if df5 is not None else None
+            orb   = orb15 or orb30
+            if orb:
+                lines.append(
+                    f"{ticker}: ORB OK  H=${orb['high']:.2f}  L=${orb['low']:.2f}  "
+                    f"range=${orb['range']:.2f}"
+                )
+            else:
+                src = "no 5m bars" if df5 is None or df5.empty else "9:30 bar missing"
+                lines.append(f"{ticker}: ORB MISSING — {src}")
+        except Exception as exc:
+            lines.append(f"{ticker}: ERROR — {exc}")
+
+    lines.append(f"\nRegime: {regime}  |  SPY: {spy_pct:+.2f}%")
+    send_alert("\n".join(lines))
+    logger.info("ORB diagnostic sent")
+
+
 def run_brain_update() -> None:
     """9:25 AM: refresh regime, pull congress + Trump catalysts, log brain status."""
     _brain.get_regime(force_refresh=True)
@@ -675,6 +706,10 @@ def main() -> None:
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=f"11-{MARKET_CLOSE_HOUR}", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
+
+    # ORB diagnostic: 10:00 AM — confirms IEX data is populating before scans ramp up
+    sched.add_job(run_orb_diagnostic, "cron", day_of_week="mon-fri",
+                  hour=10, minute=0, id="orb_diag")
 
     # Swing: 10:00 AM
     sched.add_job(run_swing_scan, "cron", day_of_week="mon-fri",
