@@ -273,7 +273,10 @@ def _execute_signal(
     )
 
     # ── Place on Alpaca ───────────────────────────────────────────────────────
-    tag    = f"{ticker}_{direction}_{signal_type}"
+    # Include minute-level timestamp so Alpaca client_order_id is always unique
+    # even if the same signal fires twice (bot restart, re-scan, stop hit & re-trigger)
+    import time as _time
+    tag    = f"{ticker}_{direction}_{signal_type}_{int(_time.time())}"
     orders = place_bracket_orders(
         ticker=ticker, direction=direction, units=units,
         stop=stop, r1_price=r1, r2_price=r2, tag=tag,
