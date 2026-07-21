@@ -17,7 +17,7 @@ import hashlib
 import logging
 import time
 import xml.etree.ElementTree as _ET_xml
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 
@@ -129,6 +129,46 @@ def _mode() -> str:
 
 
 _BLOCKED_SIGNAL_TYPES: set[str] = {"QUANT"}  # hard-blocked; 6% WR, net money-loser
+
+# ── Per-ticker loss memory ─────────────────────────────────────────────────────
+def _ticker_consecutive_losses(ticker: str) -> int:
+    """Return count of consecutive losses on this ticker over the past 7 days."""
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    from alpaca_trader import _client
+    try:
+        client = _client()
+        req = GetOrdersRequest(status=QueryOrderStatus.ALL, symbols=[ticker], limit=50)
+        orders = client.get_orders(req)
+        cutoff = datetime.now(_ET) - timedelta(days=7)
+        filled = sorted(
+            [o for o in orders
+             if o.status.value == "filled"
+             and o.filled_at and o.filled_avg_price and o.filled_qty
+             and o.filled_at.astimezone(_ET) >= cutoff],
+            key=lambda o: o.filled_at
+        )
+        queue, trips = [], []
+        for o in filled:
+            qty, price = float(o.filled_qty), float(o.filled_avg_price)
+            if o.side.value == "buy":
+                queue.append({"qty": qty, "price": price})
+            elif o.side.value == "sell" and queue:
+                remaining = qty
+                while remaining > 0 and queue:
+                    b = queue[0]
+                    fill = min(b["qty"], remaining)
+                    trips.append((price - b["price"]) * fill)
+                    b["qty"] -= fill; remaining -= fill
+                    if b["qty"] <= 0: queue.pop(0)
+        consecutive = 0
+        for pnl in reversed(trips):
+            if pnl < 0: consecutive += 1
+            else: break
+        return consecutive
+    except Exception as e:
+        logger.warning(f"Ticker loss check failed for {ticker}: {e}")
+        return 0
 
 def _can_trade(grade: str, confidence: int, signal_type: str) -> tuple[bool, str]:
     _reset_daily_state()
@@ -262,6 +302,13 @@ def _execute_signal(
     r_dist = abs(entry - stop)
     r1     = round(entry + r_dist     if direction=="BUY" else entry - r_dist,     2)
     r2     = round(entry + 2 * r_dist if direction=="BUY" else entry - 2 * r_dist, 2)
+
+    # ── Ticker loss memory: skip if 2+ consecutive losses this week ──────────
+    consec = _ticker_consecutive_losses(ticker)
+    if consec >= 2:
+        logger.info(f"Skipping {ticker} — {consec} consecutive losses this week")
+        send_alert(f"SIGNAL SKIPPED: {ticker}\nBlocked — {consec} consecutive losses this week. Will retry next week.")
+        return
 
     # ── WhatsApp alert ────────────────────────────────────────────────────────
     send_signal_alert(
@@ -708,8 +755,9 @@ def main() -> None:
                   hour=9,  minute="30,35,40,45,50,55", id="orb_9")
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
                   hour=10, minute="*/5",  id="orb_10")
+    # Stop at 12:30 PM — shadow account analysis shows 0% WR at 1-2 PM ET
     sched.add_job(run_orb_scan, "cron", day_of_week="mon-fri",
-                  hour="11-15", minute=f"*/{INTERVAL_MINUTES}",
+                  hour="11-12", minute=f"*/{INTERVAL_MINUTES}",
                   id="orb_intraday", misfire_grace_time=60)
 
     # ORB diagnostic: 10:00 AM — confirms IEX data is populating before scans ramp up
