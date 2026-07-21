@@ -57,6 +57,7 @@ from fill_monitor import (
     reset_daily_pnl, register_entry,
 )
 from notifier import send_alert, send_signal_alert, send_eod_summary, send_startup_message
+from monitor import start_command_poller, send_morning_briefing
 import brain as _brain
 from catalyst import (
     check_trend_alignment, get_catalyst_score,
@@ -747,6 +748,7 @@ def run_news_check() -> None:
 def main() -> None:
     logger.info("Alpaca Paper Bot v3 (Full Intelligence) starting...")
     send_startup_message()
+    start_command_poller()  # Telegram /status, /positions, /orders, /pnl
 
     sched = BlockingScheduler(timezone=TIMEZONE)
 
@@ -778,7 +780,11 @@ def main() -> None:
                   hour="10-15", minute="0,30", id="time_stop")
 
     # Pre-market sort at 9:20 AM — prioritises today's active stocks in the scan window
-    sched.add_job(sort_by_premarket_activity, "cron", day_of_week="mon-fri",
+    def _premarket_and_brief():
+        sort_by_premarket_activity()
+        send_morning_briefing()
+
+    sched.add_job(_premarket_and_brief, "cron", day_of_week="mon-fri",
                   hour=9, minute=20, id="premarket_sort")
 
     # Brain + catalyst refresh at 9:25 AM
