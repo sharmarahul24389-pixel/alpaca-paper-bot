@@ -188,11 +188,13 @@ def _can_trade(grade: str, confidence: int, signal_type: str) -> tuple[bool, str
     if mode == "A_ONLY" and grade != GRADE_A_ONLY_LABEL:
         return False, f"$500 target hit — Grade A only (got {grade})"
 
-    # Static grade filter
+    # Grade B permanently removed — 30% WR, net negative P&L in backtests
+    if grade == "B":
+        return False, "Grade B blocked — 30% WR removed from rotation"
+
+    # Static grade filter (C is always allowed alongside A)
     if AUTO_MIN_GRADE == "A" and grade not in ("A",):
         return False, f"grade {grade} below configured min A"
-    if AUTO_MIN_GRADE == "B" and grade not in ("A", "B"):
-        return False, f"grade {grade} below configured min B"
 
     # Brain adaptive params
     params = _brain.get_params()
