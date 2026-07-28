@@ -84,7 +84,7 @@ TIMEZONE            = "America/New_York"
 INTERVAL_MINUTES    = 30
 
 # ── Account & risk management ──────────────────────────────────────────────────
-ACCOUNT_SIZE                = 100_000
+ACCOUNT_SIZE                = 10_000
 RISK_PER_TRADE_PCT          = 0.01
 MAX_DAILY_SIGNALS           = 3
 MAX_DAILY_WATCHLIST_SIGNALS = 4
