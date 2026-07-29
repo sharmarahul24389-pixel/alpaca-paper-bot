@@ -29,7 +29,7 @@ def _send(body: str) -> bool:
     try:
         resp = requests.post(
             _TG_URL.format(token=TELEGRAM_BOT_TOKEN),
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": body, "parse_mode": "HTML"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": body},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -70,10 +70,10 @@ def send_signal_alert(
     pct_reward = abs(r2_price - entry) / entry * 100
 
     lines = [
-        f"🤖 <b>AUTO-TRADE: {ticker} {direction} {emoji}</b>",
-        f"<i>{grade_map.get(grade, grade)}  |  {signal_type}</i>",
+        f"🤖 AUTO-TRADE: {ticker} {direction} {emoji}",
+        f"{grade_map.get(grade, grade)}  |  {signal_type}",
         "",
-        f"💰 Entry:  <b>${entry:.2f}</b>  (market)",
+        f"💰 Entry:  ${entry:.2f}  (market)",
         f"🛑 Stop:   ${stop:.2f}  (−{pct_risk:.1f}%)",
         f"📤 +1R:    ${r1_price:.2f}  → sell 50%",
         f"🎯 +2R:    ${r2_price:.2f}  → close all  (+{pct_reward:.1f}%)",
@@ -82,7 +82,7 @@ def send_signal_alert(
     ]
     if spy_pct is not None and regime:
         lines += ["", f"📈 SPY {spy_pct:+.1f}%  |  Regime: {regime}"]
-    lines += ["", "<b>Why:</b>"]
+    lines += ["", "Why:"]
     for r in reasons[:5]:
         lines.append(f"  ✅ {r}")
     lines += ["", f"Confidence: {confidence}%  |  {now}"]
@@ -97,9 +97,9 @@ def send_eod_summary(account: dict, trades_today: list[dict]) -> bool:
     emoji   = "✅" if day_pnl >= 0 else "❌"
 
     lines = [
-        f"📊 <b>ALPACA PAPER — EOD SUMMARY</b>",
+        f"📊 ALPACA PAPER — EOD SUMMARY",
         "",
-        f"{emoji} Day P&L:  <b>${day_pnl:+,.0f}</b>  ({pct:+.2f}%)",
+        f"{emoji} Day P&L:  ${day_pnl:+,.0f}  ({pct:+.2f}%)",
         f"   Equity: ${equity:,.0f}",
         "",
     ]
@@ -129,7 +129,7 @@ def send_eod_summary(account: dict, trades_today: list[dict]) -> bool:
 def send_startup_message() -> bool:
     now = datetime.now(_ET).strftime("%Y-%m-%d %I:%M %p ET")
     return _send(
-        f"🤖 <b>Alpaca Paper Bot started  [PAPER]</b>\n"
+        f"🤖 Alpaca Paper Bot started  [PAPER]\n"
         f"⏰ {now}\n\n"
         f"Strategy: ORB + Z-Score (v3 Intelligence)\n"
         f"Execution: Auto bracket orders via Alpaca paper API\n\n"
