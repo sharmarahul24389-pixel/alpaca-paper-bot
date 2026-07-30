@@ -644,10 +644,10 @@ def run_weekly_summary() -> None:
     w_mult = _brain.get_weekly_size_mult()
 
     lines = [
-        "📊 <b>WEEKLY SUMMARY</b>",
+        "📊 WEEKLY SUMMARY",
         f"Week of {monday.strftime('%b %d')} – {today.strftime('%b %d, %Y')}",
         "",
-        f"💰 Week P&L  : <b>${week_pnl:+,.0f}</b>",
+        f"💰 Week P&L  : ${week_pnl:+,.0f}",
         f"   Equity    : ${equity:,.0f}",
         f"   Return    : {week_pnl/equity*100:+.2f}%",
         "",
