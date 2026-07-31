@@ -292,11 +292,9 @@ def _execute_signal(
     cat_mult   = 1.15 if cat_score >= 2 else 1.0
     total_mult = brain_mult * week_mult * cat_mult
 
-    # Use live equity so profits compound into larger position sizes
-    _acct = get_account()
-    live_equity = _acct.get("equity", ACCOUNT_SIZE) if _acct else ACCOUNT_SIZE
-
-    pos = calculate_position(entry, stop, grade, account_size=live_equity)
+    # Size against ACCOUNT_SIZE (set via env var) — not live Alpaca equity.
+    # Alpaca paper accounts default to $100K; ACCOUNT_SIZE lets you override to $10K.
+    pos = calculate_position(entry, stop, grade, account_size=ACCOUNT_SIZE)
     if not pos:
         logger.warning(f"Position sizing failed: {ticker}")
         return
@@ -586,14 +584,20 @@ def run_eod() -> None:
             logger.error(msg)
             send_alert(msg)
 
-    # Capture EOD closure fills so per-trade P&L is accurate in the summary
-    try:
-        check_fills(send_fn=send_alert, signals_list=_signals_today)
-    except Exception as e:
-        logger.warning(f"EOD fill capture failed: {e}")
-    time.sleep(2)
+    time.sleep(5)   # let EOD fills settle before querying
     acct = get_account()
-    send_eod_summary(account=acct, trades_today=_signals_today)
+
+    # Query actual Alpaca fills for the report — survives Railway restarts
+    # (in-memory _signals_today is wiped on redeploy so cannot be trusted)
+    from alpaca_trader import get_daily_report
+    report = get_daily_report()
+    day_pnl = acct.get("day_pnl", 0)
+    equity  = acct.get("equity", 0)
+    header  = (
+        f"📊 ALPACA PAPER EOD — {datetime.now(_ET).strftime('%b %d, %Y')}\n"
+        f"Day P&L: ${day_pnl:+,.0f}  |  Equity: ${equity:,.0f}\n\n"
+    )
+    send_alert(header + report)
     _brain.update_daily_pnl(get_daily_pnl())
     logger.info(f"EOD: day P&L ${acct.get('day_pnl',0):+,.0f}  week ${_brain.get_weekly_pnl():+,.0f}")
 

@@ -10,6 +10,10 @@ broker — the bot does not need to manage them.
 """
 import logging
 import time
+from collections import defaultdict
+from datetime import datetime, timezone
+
+import pytz
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
@@ -166,6 +170,111 @@ def close_position(ticker: str) -> bool:
     except Exception as e:
         logger.warning(f"Close position failed for {ticker}: {e}")
         return False
+
+
+def get_daily_report() -> str:
+    """
+    Query today's Alpaca fills and return a per-trade P&L summary.
+    Market orders = entries; limit/stop orders = exits (bracket legs).
+    Survives Railway restarts — uses Alpaca's own order history, not in-memory state.
+    """
+    _ET = pytz.timezone("America/New_York")
+    now_et    = datetime.now(_ET)
+    today_str = now_et.strftime("%b %d, %Y")
+    midnight  = _ET.localize(datetime(now_et.year, now_et.month, now_et.day))
+    today_utc = midnight.astimezone(timezone.utc)
+
+    try:
+        client = _client()
+        req    = GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=today_utc,
+            limit=200,
+        )
+        orders = client.get_orders(filter=req)
+    except Exception as exc:
+        logger.error(f"Daily report: get_orders failed: {exc}")
+        return f"Alpaca report error: {exc}"
+
+    filled = [
+        o for o in orders
+        if o.filled_qty and float(o.filled_qty) > 0 and o.filled_avg_price
+    ]
+
+    if not filled:
+        return f"🤖 ALPACA BOT — {today_str}\nNo trades executed today."
+
+    entries = defaultdict(lambda: {"qty": 0.0, "value": 0.0, "direction": ""})
+    exits   = defaultdict(list)
+
+    for o in filled:
+        ticker = str(o.symbol)
+        qty    = float(o.filled_qty)
+        price  = float(o.filled_avg_price)
+        otype  = str(getattr(o, "order_type", "")).lower()
+        side   = str(o.side.value).upper()
+
+        if "market" in otype:
+            entries[ticker]["qty"]       += qty
+            entries[ticker]["value"]     += qty * price
+            entries[ticker]["direction"]  = side
+        else:
+            exits[ticker].append({"qty": qty, "price": price})
+
+    lines      = [f"🤖 ALPACA BOT P&L — {today_str}", ""]
+    total_pnl  = 0.0
+    wins       = 0
+    trade_count = 0
+
+    for ticker in sorted(entries.keys()):
+        e         = entries[ticker]
+        avg_entry = e["value"] / e["qty"] if e["qty"] else 0.0
+        direction = e["direction"]
+        entry_qty = e["qty"]
+
+        ticker_exits   = exits.get(ticker, [])
+        total_exit_qty = sum(x["qty"] for x in ticker_exits)
+        realized_pnl   = 0.0
+        exit_lines     = []
+
+        for x in ticker_exits:
+            if direction == "BUY":
+                pnl = x["qty"] * (x["price"] - avg_entry)
+            else:
+                pnl = x["qty"] * (avg_entry - x["price"])
+            realized_pnl += pnl
+            exit_lines.append(
+                f"  Exit:  ${x['price']:.2f} x {int(x['qty'])} sh  ->  ${pnl:+.2f}"
+            )
+
+        total_pnl   += realized_pnl
+        trade_count += 1
+        if realized_pnl > 0:
+            wins += 1
+
+        remaining = entry_qty - total_exit_qty
+        icon      = "✅" if remaining <= 0 else "⏳"
+        open_note = f"  ({int(remaining)} sh still open)" if remaining > 0 else ""
+
+        lines.append(f"{icon} {ticker}  [{direction}]")
+        lines.append(f"  Entry: ${avg_entry:.2f} x {int(entry_qty)} sh")
+        lines.extend(exit_lines)
+        if not ticker_exits:
+            lines.append("  No exits recorded yet")
+        lines.append(f"  P&L:   ${realized_pnl:+.2f}{open_note}")
+        lines.append("")
+
+    wr_str = (
+        f"{wins}W / {trade_count - wins}L  {wins / trade_count * 100:.0f}% WR"
+        if trade_count else "—"
+    )
+    lines += [
+        "─" * 30,
+        f"Total P&L:  ${total_pnl:+.2f}",
+        f"Trades:     {trade_count}  ({wr_str})",
+        f"Capital:    $10K paper  |  Alpaca Bot",
+    ]
+    return "\n".join(lines)
 
 
 def move_stop_to_breakeven(ticker: str, direction: str, entry: float) -> bool:
