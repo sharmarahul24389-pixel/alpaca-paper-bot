@@ -33,7 +33,7 @@ def _send(text: str) -> None:
     try:
         requests.post(
             f"{_BASE}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
             timeout=10,
         )
     except Exception as e:
@@ -57,7 +57,7 @@ def _get_updates(offset: int) -> list:
 # ── Status builders ───────────────────────────────────────────────────────────
 
 def build_status() -> str:
-    lines = [f"<b>BOT STATUS</b>  {datetime.now(_ET).strftime('%H:%M ET %b %d')}\n"]
+    lines = [f"BOT STATUS  {datetime.now(_ET).strftime('%H:%M ET %b %d')}\n"]
 
     # Account + positions
     try:
@@ -70,27 +70,27 @@ def build_status() -> str:
         equity = float(acct.equity)
         bp     = float(acct.buying_power)
         gain   = equity - ACCOUNT_SIZE
-        lines.append(f"<b>Account</b>")
+        lines.append("Account")
         lines.append(f"  Equity:  ${equity:,.0f}  ({gain:+,.0f} vs ${ACCOUNT_SIZE:,.0f} start)")
         lines.append(f"  BP:      ${bp:,.0f}")
 
         positions = client.get_all_positions()
         if positions:
-            lines.append(f"\n<b>Open Positions ({len(positions)})</b>")
+            lines.append(f"\nOpen Positions ({len(positions)})")
             for p in positions:
                 pnl = float(p.unrealized_pl or 0)
                 pnl_pct = float(p.unrealized_plpc or 0) * 100
                 lines.append(f"  {p.symbol}: {p.qty} @ ${float(p.avg_entry_price):.2f}  PnL: ${pnl:+,.0f} ({pnl_pct:+.1f}%)")
         else:
-            lines.append("\n<b>Positions:</b> None")
+            lines.append("\nPositions: None")
 
         open_orders = client.get_orders()
         if open_orders:
-            lines.append(f"\n<b>Open Orders ({len(open_orders)})</b>")
+            lines.append(f"\nOpen Orders ({len(open_orders)})")
             for o in open_orders:
                 lines.append(f"  {o.symbol} {o.side.value} {o.qty} {o.type.value} [{o.status.value}]")
         else:
-            lines.append("\n<b>Orders:</b> None pending")
+            lines.append("\nOrders: None pending")
 
     except Exception as e:
         lines.append(f"\n[Alpaca error: {e}]")
@@ -102,7 +102,7 @@ def build_status() -> str:
         regime = _brain.get_regime() if hasattr(_brain, "get_regime") else "—"
         min_conf = params.get("min_confidence_orb", "—")
         size_mult = params.get("position_size_mult", 1.0)
-        lines.append(f"\n<b>Brain</b>")
+        lines.append("\nBrain")
         lines.append(f"  Regime:     {regime}")
         lines.append(f"  Min conf:   {min_conf}%")
         lines.append(f"  Size mult:  {size_mult}x")
@@ -116,7 +116,7 @@ def build_status() -> str:
     try:
         from fill_monitor import get_daily_pnl
         pnl = get_daily_pnl()
-        lines.append(f"\n<b>Today P&L:</b> ${pnl:+,.2f}")
+        lines.append(f"\nToday P&L: ${pnl:+,.2f}")
     except Exception:
         pass
 
@@ -124,20 +124,20 @@ def build_status() -> str:
     try:
         from main import _signals_today
         if _signals_today:
-            lines.append(f"\n<b>Signals Today ({len(_signals_today)})</b>")
+            lines.append(f"\nSignals Today ({len(_signals_today)})")
             for s in _signals_today:
                 lines.append(f"  {s['ticker']} {s['direction']} {s['grade']}  entry=${s['entry']:.2f}")
         else:
-            lines.append("\n<b>Signals Today:</b> None yet")
+            lines.append("\nSignals Today: None yet")
     except Exception:
         pass
 
-    lines.append(f"\n<i>Scan window: 9:30–12:30 PM ET | EOD: 3:55 PM</i>")
+    lines.append("\nScan window: 9:30–12:30 PM ET | EOD: 3:55 PM")
     return "\n".join(lines)
 
 
 def build_morning_briefing() -> str:
-    lines = [f"<b>MORNING BRIEFING</b>  {datetime.now(_ET).strftime('%A %b %d')}\n"]
+    lines = [f"MORNING BRIEFING  {datetime.now(_ET).strftime('%A %b %d')}\n"]
 
     try:
         from alpaca.trading.client import TradingClient
@@ -190,7 +190,7 @@ def _handle_command(text: str) -> None:
             if not positions:
                 _send("No open positions.")
                 return
-            lines = ["<b>Open Positions</b>"]
+            lines = ["Open Positions"]
             for p in positions:
                 pnl = float(p.unrealized_pl or 0)
                 lines.append(f"  {p.symbol}: {p.qty} @ ${float(p.avg_entry_price):.2f}  ${pnl:+,.0f}")
@@ -206,7 +206,7 @@ def _handle_command(text: str) -> None:
             if not orders:
                 _send("No open orders.")
                 return
-            lines = [f"<b>Open Orders ({len(orders)})</b>"]
+            lines = [f"Open Orders ({len(orders)})"]
             for o in orders:
                 lines.append(f"  {o.symbol} {o.side.value} {o.qty} {o.type.value}")
             _send("\n".join(lines))
@@ -220,11 +220,11 @@ def _handle_command(text: str) -> None:
             _send(f"Error: {e}")
     elif cmd in ("/help", "/start"):
         _send(
-            "<b>Alpaca Bot Commands</b>\n"
+            "Alpaca Bot Commands\n"
             "/status    — full snapshot\n"
             "/positions — open positions\n"
             "/orders    — pending orders\n"
-            "/pnl       — today's P&amp;L"
+            "/pnl       — today's P&L"
         )
 
 
