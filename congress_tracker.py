@@ -25,6 +25,8 @@ _ET = pytz.timezone("America/New_York")
 _HOUSE_API  = "https://housestockwatcher.com/api/transactions"
 _SENATE_API = "https://senatestockwatcher.com/api/transactions"
 
+_doh_warned: set[str] = set()
+
 
 def _fetch_url(url: str, timeout: int = 15) -> requests.Response | None:
     """
@@ -51,7 +53,11 @@ def _fetch_url(url: str, timeout: int = 15) -> requests.Response | None:
         answers = doh.json().get("Answer", [])
         ip = next((a["data"] for a in answers if a.get("type") == 1), None)
         if not ip:
-            logger.warning(f"DoH returned no A record for {hostname}")
+            if hostname not in _doh_warned:
+                logger.warning(f"DoH returned no A record for {hostname} — will retry silently")
+                _doh_warned.add(hostname)
+            else:
+                logger.debug(f"DoH no A record for {hostname} (persistent DNS failure)")
             return None
         ip_url = url.replace(f"://{hostname}", f"://{ip}", 1)
         # verify=False because cert is bound to hostname not IP;

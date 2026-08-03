@@ -102,7 +102,9 @@ def _get_fill_times(symbols: list) -> dict:
         from alpaca_trader import get_recent_orders
         today = date.today()
         times = {}
-        for o in get_recent_orders(status="filled", limit=200):
+        for o in get_recent_orders(status="closed", limit=200):
+            if str(getattr(o, "status", "")).lower() != "filled":
+                continue
             sym = o.symbol
             if sym in symbols and sym not in times and o.filled_at:
                 t = o.filled_at

@@ -154,9 +154,13 @@ def get_truth_social_posts(since_hours: float = 48.0) -> list[dict]:
             logger.warning(f"Truth Social feed returned HTTP {resp.status_code}")
             return []
 
-        feed = feedparser.parse(resp.content)
+        raw = resp.content.lstrip(b"\xef\xbb\xbf").lstrip()
+        if not any(raw.startswith(sig) for sig in (b"<?xml", b"<rss", b"<feed")):
+            logger.debug(f"Truth Social: not RSS ({len(resp.content)} bytes) — Cloudflare block or format change")
+            return []
+        feed = feedparser.parse(raw)
         if feed.bozo and not feed.entries:
-            logger.warning(f"Truth Social feed parse error: {feed.bozo_exception}")
+            logger.debug(f"Truth Social feed parse error: {feed.bozo_exception}")
             return []
 
         if not feed.entries:
